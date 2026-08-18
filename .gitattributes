@@ -1,0 +1,21 @@
+# リポジトリ内のテキストをLFへ正規化する。
+* text=auto eol=lf
+
+# バイナリ資産をテキストとして扱わない。
+*.7z binary
+*.avi binary
+*.bmp binary
+*.gif binary
+*.ico binary
+*.jpeg binary
+*.jpg binary
+*.mov binary
+*.mp3 binary
+*.mp4 binary
+*.pdf binary
+*.png binary
+*.rar binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.zip binary
