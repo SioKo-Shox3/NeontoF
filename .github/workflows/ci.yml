@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14.3
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.3"
+
+      - name: Assert Python version
+        shell: pwsh
+        run: py -3.14 -c "import sys; assert sys.version_info[:3] == (3, 14, 3); print(sys.version)"
+
+      - name: Create virtual environment
+        shell: pwsh
+        run: py -3.14 -m venv .venv
+
+      - name: Install locked dependencies
+        shell: pwsh
+        run: .venv/Scripts/python -m pip install --require-hashes -r requirements.lock.txt
+
+      - name: Check installed dependencies
+        shell: pwsh
+        run: .venv/Scripts/python -m pip check
+
+      - name: Compile source
+        shell: pwsh
+        run: .venv/Scripts/python -m compileall -q src
+
+      - name: Check formatting
+        shell: pwsh
+        run: .venv/Scripts/python -m ruff format --check src tests
+
+      - name: Run lint
+        shell: pwsh
+        run: .venv/Scripts/python -m ruff check src tests
+
+      - name: Run type checking
+        shell: pwsh
+        run: .venv/Scripts/python -m mypy --strict src tests --exclude "tests/typecheck_fixtures"
+
+      - name: Run tests
+        shell: pwsh
+        run: .venv/Scripts/python -m pytest -q
