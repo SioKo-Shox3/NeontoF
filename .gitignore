@@ -9,12 +9,18 @@ node_modules/
 .venv/
 venv/
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # ビルド・テスト・カバレッジ・ツールの出力
 build/
 dist/
 out/
 coverage/
+htmlcov/
+.coverage
+.coverage.*
 .nyc_output/
 .cache/
 .vite/
