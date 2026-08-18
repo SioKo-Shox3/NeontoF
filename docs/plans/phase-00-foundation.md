@@ -677,6 +677,12 @@ discriminator="type")で定義する。
 ### 8.5 実行コマンドと期待結果
 
 ~~~powershell
+$repositoryRoot = (& git rev-parse --show-toplevel).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) {
+  throw "Unable to determine repository root"
+}
+Set-Location -LiteralPath $repositoryRoot
+
 py -3.14 --version
 py -3.14 -c "import sys; assert sys.version_info[:3] == (3, 14, 3); print(sys.version)"
 $lockToolRoot = Join-Path $env:TEMP ("neontof-p0-lock-tool-" + [guid]::NewGuid().ToString("N"))
@@ -690,10 +696,21 @@ $pipToolsVersion = (& $lockToolPython -c "import importlib.metadata; print(impor
 if ($pipToolsVersion -ne "7.6.1") { throw "Unexpected pip-tools version: $pipToolsVersion" }
 Write-Output "pip-tools ($pipToolsVersion)"
 $pipCompile = Join-Path $lockToolVenv "Scripts/pip-compile.exe"
-$requirementsDevInput = (Resolve-Path -LiteralPath "requirements-dev.in").Path
-$requirementsLockOutput = Join-Path (Get-Location) "requirements.lock.txt"
-& $pipCompile --generate-hashes --output-file $requirementsLockOutput $requirementsDevInput
-if ($LASTEXITCODE -ne 0) { throw "pip-compile failed" }
+$customCompileCommand = "pip-compile --generate-hashes --output-file requirements.lock.txt requirements-dev.in"
+$customCompileCommandWasSet = Test-Path Env:CUSTOM_COMPILE_COMMAND
+$customCompileCommandOriginal = $env:CUSTOM_COMPILE_COMMAND
+try {
+  $env:CUSTOM_COMPILE_COMMAND = $customCompileCommand
+  & $pipCompile --generate-hashes --output-file requirements.lock.txt requirements-dev.in
+  if ($LASTEXITCODE -ne 0) { throw "pip-compile failed" }
+}
+finally {
+  if ($customCompileCommandWasSet) {
+    $env:CUSTOM_COMPILE_COMMAND = $customCompileCommandOriginal
+  } else {
+    Remove-Item Env:CUSTOM_COMPILE_COMMAND -ErrorAction SilentlyContinue
+  }
+}
 if ($lockToolRoot -notlike (Join-Path $env:TEMP "neontof-p0-lock-tool-*") ) {
   throw "Refusing to remove an unvalidated lock tool path"
 }
