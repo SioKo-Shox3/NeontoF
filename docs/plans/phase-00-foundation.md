@@ -8,11 +8,12 @@
 **Goal:** Event履歴、セーブデータ、テスト、後続機能へ波及する最小契約と、APIキーなしで反証
 可能な品質基盤を固定し、Phase 1の実装を開始できる状態にする。
 
-**期待する挙動変化:** 現在は計画文書しかない。Phase 0完了時には、候補Bを記録した承認済み
-Stack ADR、起動可能な空Application、CIとローカルで同じPython Build/Test/Format/Lint/型
-チェック、Domain・Semantic Result・Character Sheet・Scenarioの契約テスト、Fake / Scripted /
-Recorded Fixture Providerが存在する。実ScenarioのTurn、Web UI、client、永続Event Store、
-実Provider、migrations directoryはまだ存在しない。
+**現在地と期待する挙動変化:** 現在はP0-03入口であり、P0-01/P0-01b/P0-02は完了済み、HEADは
+`503a9a3`である。Phase 0完了時には、候補Bを記録した承認済みStack ADR、起動可能な空
+Application、CIとローカルで同じPython Build/Test/Format/Lint/型チェック、Domain・Semantic
+Result・Character Sheet・Scenarioの契約テスト、Fake / Scripted / Recorded Fixture Providerが
+存在する。実ScenarioのTurn、Web UI、client、永続Event Store、実Provider、migrations directoryは
+まだ存在しない。
 
 **Architecture:** Event Logをゲーム状態の唯一の権威とし、State / CanonはEventから再構築する
 Projectionとする。Semantic ResultはNarrativeと分離し、検証済みのproposed_events（非Fact
@@ -113,9 +114,10 @@ docs/agent-guide/build-and-verify.md、docs/agent-guide/coding-style.mdである
   API key、network、課金なしで再現し、sanitized call logにraw request、context、payload、
   secretが出ない。全pytest sessionのautouse network/socket禁止境界がPASSし、network call 0を
   確認する。
-- OpenAIの文字列検索はrequirementsとsrc/testsの実行対象で0件、src/**/provider_registry.py、
-  client/**、migrations/**、Dockerfile、package系、TypeScript実行経路が存在しない。禁止
-  file / directoryはTest-Path / Get-ChildItemで存在そのものをFAILにする。
+- OpenAI / Anthropic / sqlite3 connectionのsource-only検索は`src/neontof`を対象に0件とし、
+  requirementsの`openai`も0件にする。testsではreject caseとして語を含むことを許す。`src/**/provider_registry.py`、
+  client/**、migrations/**、Dockerfile、package系、TypeScript実行経路が存在しない。禁止file /
+  directoryはTest-Path / Get-ChildItemで存在そのものをFAILにする。
 - docs/status/phase-00-foundation.mdにGate結果、実commandと実出力、Known Issues、CI remote
   pending、Phase 1 Entry Conditions、Playtest非該当理由が記録される。
 - Gate通過後もPhase 1へ自動的に進まず、ユーザー判断を待つ。
@@ -253,8 +255,19 @@ docs/status/**
 
 ### 4.1 Ownership と寿命
 
-- Phase 0のEvent / Projection codeは副作用を持たない純粋Contract実装とtest-only reducer
-  とする。永続Event Storeの所有権はPhase 1でTurn Engineのappend経路へ与える。
+- Phase 0 productionは副作用を持たない純粋なContract/reducerだけとする。
+  test-only reference reducerは作らない。raw fixture → production parser → production rebuildを唯一の検証経路とし、
+  永続Event Storeの所有権はPhase 1でTurn Engineのappend経路へ与える。
+- `src/neontof/contracts/projection.py`が`FactRecord`、`Projection`、`derive_fact_id`、
+  `rebuild_projection`を所有する。これらの重複定義を`domain.py`、tests、test-only supportへ
+  置かない。
+- `domain.py`はEvent payload、Event envelope、Event subtype、`DomainEvent` unionを所有する。
+  `event_parser.py`はraw parserと`DomainEventValidationIssue` / `DomainEventValidationError`、`turn_status.py`は
+  `project_turn_status`を所有し、`ids.py`はID / `Visibility`、`base.py`はcanonical
+  `ContractModel`とimmutable JSONを所有する。
+- `config.py`の`ContractModel`は`src/neontof/contracts/base.py`からのre-exportだけにする。
+  `app.py`はconfig側の別定義を参照せず、canonicalな`contracts/base.py`の`ContractModel`を参照
+  する。ContractModelを他のpathで再定義しない。
 - TranscriptEntryとTelemetryEntryはDomainEvent unionに含めず、Projection reducerの入力型
   にも含めない。
 - Fake / Scripted Providerのscript cursorとcall logはprovider instanceが所有する。
@@ -272,11 +285,15 @@ docs/status/**
 src/neontof/main.py
     └─ src/neontof/app.py / config.py / uvicorn。DomainやProviderを所有しない
 src/neontof/app.py
-    └─ HealthResponseだけを参照。Game state、Event、sqlite3、Providerを所有しない
-src/neontof/contracts/domain.py
-src/neontof/contracts/event_parser.py
-src/neontof/contracts/turn_status.py
-    └─ base.py / ids.pyのContractModel、ID、Visibility、Event型だけを参照
+    └─ src/neontof/contracts/base.pyのcanonical ContractModelだけを参照。Game state、Event、
+       sqlite3、Providerを所有しない
+src/neontof/config.py
+    └─ src/neontof/contracts/base.pyをre-exportするだけで、ContractModelを定義しない
+src/neontof/contracts/event_parser.py ─┐
+src/neontof/contracts/turn_status.py ──┼─> src/neontof/contracts/domain.py
+src/neontof/contracts/projection.py ───┘       └─ src/neontof/contracts/ids.py / base.py
+src/neontof/contracts/__init__.py
+    └─ contractsのcanonical exportだけを参照し、別のContractModelを定義しない
 src/neontof/contracts/semantic_result.py
     └─ domain.pyのEvent / ID / Visibilityを参照。NarrativeをEventへ変換しない
 src/neontof/contracts/character_sheet.py
@@ -285,10 +302,13 @@ src/neontof/contracts/scenario.py
 src/neontof/model/*
     └─ semantic_result.py / domain.pyのprovider-neutral contractを参照
 tests/** → src/neontof/**
-tests/**のsupportはtest-only oracle / driverを所有する
+tests/**のsupportはfixture / driverだけを所有し、reference reducerを所有しない
 src/neontof/** → tests/** は参照しない
 ~~~
 
+依存順は`event_parser.py / turn_status.py / projection.py → domain.py → ids.py / base.py`で固定
+する。`domain.py`から`projection.py`、`event_parser.py`、`turn_status.py`への逆依存はない。
+`projection.py`から`domain.py`への依存は許可するが、Stateを直接更新するAPIは作らない。
 Model outputからStateへの直接依存矢印は作らない。Semantic validationの成功値もProposalで
 あり、Phase 1 Turn EngineがDomain Ruleと現在Stateを検証してEvent envelopeを付けるまで
 権威を持たない。FastAPI routeからDomain stateを直接更新する公開APIも作らない。
@@ -445,8 +465,8 @@ parityはP0-01b完了後に置換する」と整理する。P0-01b完了後に�
 
 MyWorkflow側の操作はNeontoFと別のcommit boundaryで行い、MyWorkflow `main`へ直接commitせず、
 pushもしない。レビュー後に明示pathだけをstageし、
-`node C:/Users/KINGkawamura/Documents/MyWorkflow/deploy.mjs --apply NeontoF`、続けて
-`node C:/Users/KINGkawamura/Documents/MyWorkflow/deploy.mjs NeontoF`を実行し、展開差分0を
+`node C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs --apply NeontoF`、続けて
+`node C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs NeontoF`を実行し、展開差分0を
 確認する。以下は計画へ戻す実行順であり、今回の計画編集ターンではMyWorkflowを編集しない。
 
 ADRには次の補助probe証拠をそのまま記録する。
@@ -503,7 +523,7 @@ PyYAML証拠、SQLite ownership、migration境界、OpenAI Phase 1候補、A/C/D
 ADR commit後のMyWorkflow側は、次の境界で実行する。
 
 ~~~powershell
-Set-Location C:/Users/KINGkawamura/Documents/MyWorkflow
+Set-Location -LiteralPath C:\Users\KINGkawamura\Documents\MyWorkflow
 git switch -c docs/neontof-phase-00-guides
 # architecture.md、coding-style.md、build-and-verify.mdだけを編集する
 git add architecture.md coding-style.md build-and-verify.md
@@ -512,8 +532,8 @@ git diff --cached --name-only
 # staged diffのreview完了を確認してからcommitする
 git commit -m "docs: NeontoFのPythonガイドを更新する"
 git show --check --stat HEAD
-node C:/Users/KINGkawamura/Documents/MyWorkflow/deploy.mjs --apply NeontoF
-node C:/Users/KINGkawamura/Documents/MyWorkflow/deploy.mjs NeontoF
+node C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs --apply NeontoF
+node C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs NeontoF
 ~~~
 
 `git diff --cached --name-only`の期待結果は上記3ファイルだけであり、deployの期待結果は
@@ -604,19 +624,24 @@ warn_untyped_fields = true
 通常qualityのmypyはpython -m mypy --strict src tests --exclude tests/typecheck_fixturesを
 使う。negative fixtureは通常qualityから除外し、python -m mypy --strict
 tests/typecheck_fixtures/transcript_telemetry_into_domain_event.pyを別に実行する。この
-別commandはexpected exit 1で、[arg-type]または[assert-type]の実出力をGate証拠へ貼る。
-error-code付きignoreはnegative fixture内の意図した型エラー位置だけに置き、productionや
-通常quality対象へ拡張しない。
+別commandはstdout / stderrを捕捉してexpected exit 1、error line exactly 2、両方`[arg-type]`、
+その他のerror 0件を確認し、fixture filename、`TranscriptEntry`、`TelemetryEntry`、`DomainEvent`の
+各fragmentも出力に含める。任意の`[arg-type]` 2件だけを成功扱いにしない。
 
-negative fixtureは次のように、Transcript / TelemetryをDomainEventへ渡す型境界を明示する。
-assert_typeの不一致が[assert-type]でexit 1になり、呼び出し行のignoreは[arg-type]を明記
-する。fixture以外のsource / testsにはこのignoreを置かない。
+negative fixtureは次のように、productionの実型`DomainEvent`、`TranscriptEntry`、`TelemetryEntry`を
+importするtyped sinkへTranscript / Telemetryを渡す型境界を明示する。`# type: ignore`、
+`assert_type`、`cast(`はfixtureにも他のsource / testsにも置かない。
 
 ~~~python
-from typing import assert_type
+from neontof.contracts.domain import DomainEvent, TelemetryEntry, TranscriptEntry
+from neontof.contracts.projection import rebuild_projection
 
-assert_type(transcript_entry, DomainEvent)  # expected [assert-type]
-append_domain_event(transcript_entry)  # type: ignore[arg-type]
+def project_domain_event(event: DomainEvent) -> None:
+    rebuild_projection((event,))
+
+def typed_sink(transcript_entry: TranscriptEntry, telemetry_entry: TelemetryEntry) -> None:
+    project_domain_event(transcript_entry)
+    project_domain_event(telemetry_entry)
 ~~~
 
 ### 8.3 型とSignature
@@ -771,11 +796,24 @@ negative mypy evidence:
 
 ~~~powershell
 $env:PYTHONPATH = (Join-Path (Get-Location) "src")
-& $neontofPython -m mypy --strict tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py
+$negativeOutput = (& $neontofPython -m mypy --strict tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py 2>&1 | Out-String)
+$negativeExit = $LASTEXITCODE
+$negativeOutput
+$negativeLines = @($negativeOutput -split "`r?`n" | Where-Object { $_ -ne "" })
+$errorLines = @($negativeLines | Where-Object { $_ -match 'error:' })
+$argTypeLines = @($errorLines | Where-Object { $_ -match '\[arg-type\]' })
+$otherErrorLines = @($errorLines | Where-Object { $_ -notmatch '\[arg-type\]' })
+if ($negativeExit -ne 1) { throw "negative mypy expected exit 1, got $negativeExit." }
+if ($errorLines.Count -ne 2 -or $argTypeLines.Count -ne 2 -or $otherErrorLines.Count -ne 0) { throw "negative mypy error surface mismatch." }
+foreach ($fragment in @('tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py', 'TranscriptEntry', 'TelemetryEntry', 'DomainEvent')) {
+  if ($negativeOutput -notmatch [regex]::Escape($fragment)) { throw "negative mypy output lacks fragment: $fragment" }
+}
+"negative mypy exit $negativeExit; errors=$($errorLines.Count); arg-type=$($argTypeLines.Count); other-errors=$($otherErrorLines.Count)"
 ~~~
 
-期待結果は[arg-type]または[assert-type]を含むexit 1。通常qualityはnegative fixtureを除外
-してexit 0、負例単独は型境界が壊れた場合にexit 1となる。
+期待結果はstdout / stderrを捕捉したexit 1、error lines exactly 2、両方`[arg-type]`、other errors 0、
+fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent`の各fragmentありである。通常qualityは
+negative fixtureを除外してexit 0、負例単独は型境界が壊れた場合にexit 1となる。
 
 実entrypoint probeはRepository外のtemporary outputへredirectする。`PYTHONPATH=src`を一貫して
 使い、HTTP 200 / JSONの後にWindows process groupへCTRL_BREAK_EVENT相当を送る。graceful
@@ -889,32 +927,133 @@ Transcript / Telemetry分離を、文書と実行可能な純粋Contractで固�
 TurnAborted、Fact ID導出、parser Signature、Projection reducer、project_turn_status、revert
 semantics、Event順序、version rejection。
 
-**Non-goal:** Database table、Event repository、sqlite3 transaction、migration runner、完全な
-State / Canon、Ruleset event全種、Turn Engine。
+**Non-goal:** P0-03では次を実装・公開しない。
+
+- Event append、Event Store、Store interface、DB、database table、sqlite3 transaction、
+  migration runner、Turn Engine。
+- 実HTTP resend冪等、resend時の既存結果返却、任意revert、部分revert、recursive revert、
+  TurnStarted、EmptyPayload。
+- test-only reference reducer、decoded `Mapping` を受け取るpublic parser、versionを暗黙変換する
+  parser、Narrative / Transcript / TelemetryをEvent payloadへ入れる経路。
+- Plugin、Hook、Profile、Manifest、Capability Graph、二つ目のProvider / Ruleset / Scenario。
+
+Event typeは17種を維持し、`TurnStarted`を追加しない。P0のsame-request規則はcanonical Event列の
+対象Turn Eventが同一`turn_request_id`を持つこと、二重`PlayerInputAccepted`とrequest mismatchを
+rejectすることまでを検証する。実HTTP再送の既存結果返却はP1-03で扱う。
 
 ### 9.2 作成ファイルと責務
 
-- docs/specs/core-domain-and-events.md — Domain語彙、Authority、Event、Projection、Transcript /
-  Telemetry、Undo、version / migration規則。
-- src/neontof/contracts/base.py — ContractModelとimmutable JSON helper。
-- src/neontof/contracts/ids.py — Annotated ID、StringConstraints、Visibility、stable grammar。
-- src/neontof/contracts/domain.py — Event subtype、DomainEvent union、TranscriptEntry、
-  TelemetryEntry、FactRecord、Projection。
-- src/neontof/contracts/event_parser.py — TypeAdapterによる受信・保存境界、parse function、
-  ValidationIssue。
-- src/neontof/contracts/turn_status.py — Event列だけからTurn statusを再構築する純粋関数。
-- tests/contracts/support/reference_projection.py — test-only pure reducer。
-- tests/contracts/test_domain.py、test_event_parser.py、test_turn_status.py、
-  test_contract_model.py — valid / invalid / rebuild / transition / sabotage。
-- tests/fixtures/events/minimal-session.v1.json、invalid-unknown-field.v1.json、
-  invalid-unknown-version.v1.json、invalid-unknown-event.v1.json、invalid-payloads.v1.json、
-  turn-status-sequences.v1.json、same-request-resend.v1.json。
+P0-03の新規pathは次の完全列挙だけである。ここにない新規pathを追加しない。
+
+**新規path:**
+
+- `docs/specs/core-domain-and-events.md`
+- `src/neontof/contracts/__init__.py`
+- `src/neontof/contracts/base.py`
+- `src/neontof/contracts/ids.py`
+- `src/neontof/contracts/domain.py`
+- `src/neontof/contracts/event_parser.py`
+- `src/neontof/contracts/projection.py`
+- `src/neontof/contracts/turn_status.py`
+- `tests/contracts/__init__.py`
+- `tests/contracts/test_contract_model.py`
+- `tests/contracts/test_domain.py`
+- `tests/contracts/test_event_parser.py`
+- `tests/contracts/test_turn_status.py`
+- `tests/fixtures/events/minimal-session.v1.json`
+- `tests/fixtures/events/invalid-unknown-field.v1.json`
+- `tests/fixtures/events/invalid-unknown-version.v1.json`
+- `tests/fixtures/events/invalid-unknown-event.v1.json`
+- `tests/fixtures/events/invalid-payloads.v1.json`
+- `tests/fixtures/events/turn-status-sequences.v1.json`
+- `tests/fixtures/events/same-request-resend.v1.json`
+
+**変更path:**
+
+- `src/neontof/config.py`
+- `src/neontof/app.py`
+- `tests/test_config.py`
+- `tests/test_repository_contracts.py`
+- `tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py`
+
+`tests/contracts/support/reference_projection.py`は作らない。期待値生成helperも作らず、production
+のparser / `rebuild_projection`を直接テストする。
+
+| path | 責務 |
+|---|---|
+| `docs/specs/core-domain-and-events.md` | Event wire契約、ID、Projection、Turn status、parser、version、秘密境界を固定する。 |
+| `src/neontof/contracts/__init__.py` | contractの公開exportだけを行い、型の重複定義を持たない。 |
+| `src/neontof/contracts/base.py` | 唯一の`ContractModel`、strict設定、immutable JSON、再検証設定を所有する。 |
+| `src/neontof/contracts/ids.py` | stable ID grammar、`Visibility`、ID用adapterを所有する。 |
+| `src/neontof/contracts/domain.py` | 17 Eventのpayload / envelope / subtypeと`DomainEvent`、Transcript / Telemetryの非Event型を所有する。 |
+| `src/neontof/contracts/event_parser.py` | raw `str | bytes`だけを受けるversion先行parserと、秘密を保持しない`DomainEventValidationIssue` / `DomainEventValidationError`を所有する。 |
+| `src/neontof/contracts/projection.py` | `FactRecord`、`Projection`、`derive_fact_id`、`rebuild_projection`と純粋reducerを所有する。 |
+| `src/neontof/contracts/turn_status.py` | `project_turn_status(turn_id, events)`と遷移検証を所有する。 |
+| `src/neontof/config.py` | `base.py`のcanonical `ContractModel`をre-exportする。別定義しない。 |
+| `src/neontof/app.py` | canonical `contracts/base.py`を参照する既存health Applicationのregressionを保つ。 |
+| `tests/contracts/*` | raw fixtureをproduction parser / reducerへ渡し、handwritten expected valueと比較する。 |
+| `tests/fixtures/events/*` | 7つのsanitized versioned JSON fixture。secret / API key / raw promptを含めない。 |
+| `tests/test_config.py` / `tests/test_repository_contracts.py` | config identity、app regression、production manifest、extra pathを検証する。 |
+| `tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py` | 実型のproduction sinkへTranscript / Telemetryを渡すnegative mypyだけを保持する。 |
+
+P0-03のproduction manifestは次の11相対pathに固定する。既存pathも含め、実装者はこの集合を
+勝手に拡張しない。
+
+~~~text
+src/neontof/__init__.py
+src/neontof/main.py
+src/neontof/config.py
+src/neontof/app.py
+src/neontof/contracts/__init__.py
+src/neontof/contracts/base.py
+src/neontof/contracts/ids.py
+src/neontof/contracts/domain.py
+src/neontof/contracts/event_parser.py
+src/neontof/contracts/projection.py
+src/neontof/contracts/turn_status.py
+~~~
+
+`tests/test_repository_contracts.py`は固定globの書き漏れで済ませず、
+`Path("src/neontof").rglob("*.py")`で実ファイルを列挙し、POSIX相対pathへ正規化した集合と
+上の11相対pathの差分を検証する。production manifest外の`.py`、manifestにないpath、
+`projection.py`以外の`FactRecord` / `Projection`定義をFAILにする。
+
+MyWorkflowの正本
+`C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\agent-guide\build-and-verify.md`
+はNeontoFのscopeへ混ぜない。P0-03実測後にMyWorkflow側の別branch / 別commitで更新し、NeontoFの
+commitとは分離する。
 
 ### 9.3 型とSignature
 
+P0-03のContractModelは`src/neontof/contracts/base.py`だけを唯一の定義元とする。
+
 ~~~python
+from pydantic import ConfigDict
+
+class ContractModel(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        revalidate_instances="always",
+    )
+~~~
+
+`config.py`はこの型をre-exportし、`app.py`はcanonicalな`base.py`を参照する。
+`tests/test_config.py`は`config.ContractModel is base.ContractModel`と、appがcanonical baseを
+参照するidentityを検証する。strict / forbid / frozen / `revalidate_instances="always"`を
+config側や各subtype側で別の設定にしない。
+
+Immutable JSONの公開型には`list` / `dict`を使わない。arrayはtuple、objectはkeyがsortedかつ
+uniqueな`tuple[tuple[str, FrozenJsonValue], ...]`、scalarは`None | str | bool | strict int |
+finite float`とする。`bool`は`int`として受理しない。finiteでないfloatはrejectする。入力の
+aliasを保持せずにdeep copyして凍結し、nested mutationも拒否する。
+
+~~~python
+import re
+from datetime import datetime
 from typing import Annotated, Literal, TypeAlias
-from pydantic import Field, TypeAdapter
+from pydantic import BeforeValidator, Field, StrictInt, StringConstraints, TypeAdapter
 
 CampaignId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^campaign:[a-z0-9]+(?:-[a-z0-9]+)*$")]
 SessionId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^session:[a-z0-9]+(?:-[a-z0-9]+)*$")]
@@ -922,108 +1061,832 @@ SceneId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^scene:[a-z0-9]+
 TurnId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^turn:[a-z0-9]+(?:-[a-z0-9]+)*$")]
 TurnRequestId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^turn-request:[a-z0-9]+(?:-[a-z0-9]+)*$")]
 EventId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^event:[a-z0-9]+(?:-[a-z0-9]+)*$")]
-FactId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^fact:[a-z0-9]+:[0-9]+$")]
+FactId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^fact:[0-9a-f]{64}:(0|[1-9][0-9]*)$")]
 NpcId: TypeAlias = Annotated[str, StringConstraints(pattern=r"^npc:[a-z0-9]+(?:-[a-z0-9]+)*$")]
+ActionId: TypeAlias = Annotated[str, StringConstraints(strict=True, pattern=r"^action:[a-z0-9]+(?:-[a-z0-9]+)*$")]
+LowercaseSha256: TypeAlias = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{64}$")]
 Visibility: TypeAlias = Literal["gm_only", "player_visible"] | NpcId
 VISIBILITY_ADAPTER = TypeAdapter(Visibility)
+FactKind: TypeAlias = Literal["fact", "ruling", "agreement", "plan", "promise"]
+FactHolder: TypeAlias = Literal["world", "player_character", "rumor"] | NpcId
+SceneEndReason: TypeAlias = Literal["completed", "aborted", "table_correction"]
+SessionEndReason: TypeAlias = Literal["completed", "aborted", "table_correction"]
+
+def validate_occurred_at(value: object) -> str:
+    if type(value) is not str or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value) is None:
+        raise ValueError("occurred_at must be an ASCII UTC timestamp")
+    datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    return value
+
+OccurredAt: TypeAlias = Annotated[str, BeforeValidator(validate_occurred_at)]
 ~~~
 
 EntityId、FactSubjectId、CharacterId、LocationId、ItemId、ClockId、ResourceId、ActionId、
 ScenarioId、SecretId、ClueId、InvariantId、EndConditionId、TranscriptId、TelemetryId、
-ModelCallIdも同じkind:slug grammarで個別に定義する。
+ModelCallIdもkind:slug grammarで個別に定義する。Event typeは次の17種を固定し、
+`TurnStarted`を追加しない。
 
-各Event subtypeはContractModelで、typeをdiscriminatorにする。Event typeはCampaignCreated、
-SessionStarted、SceneStarted、SceneEnded、PlayerInputAccepted、DiceRolled、ResourceChanged、
-CharacterMoved、ClockAdvanced、FactAsserted、FactSuperseded、TurnAwaitingPlayer、TurnResumed、
-TurnAborted、TurnCommitted、TurnReverted、SessionEndedを固定する。
+`CampaignCreated`、`SessionStarted`、`SceneStarted`、`SceneEnded`、`PlayerInputAccepted`、
+`DiceRolled`、`ResourceChanged`、`CharacterMoved`、`ClockAdvanced`、`FactAsserted`、
+`FactSuperseded`、`TurnAwaitingPlayer`、`TurnResumed`、`TurnAborted`、`TurnCommitted`、
+`TurnReverted`、`SessionEnded`。
+
+#### Event v1 wire契約
+
+全Eventは次のtop-level fieldを持つ。fieldを省略せず、nullableなfieldも必ず明示的な`null`を
+送る。`event_version`はv1だけを受理し、subtypeの`type`をdiscriminatorにする。
+
+| field | type / invariant |
+|---|---|
+| `type` | 上記17種のliteral。v1 adapterのdiscriminator。 |
+| `event_id` | `EventId`。Event列全体でunique。 |
+| `event_version` | strict intのliteral `1`。未知versionはreject。 |
+| `campaign_id` | `CampaignId`。全Eventでrequired。 |
+| `session_id` | `SessionId | None`。context表に従いrequiredまたは明示的`null`。 |
+| `scene_id` | `SceneId | None`。context表に従いrequiredまたは明示的`null`。 |
+| `turn_id` | `TurnId | None`。context表に従いrequiredまたは明示的`null`。 |
+| `sequence` | strict int。campaign-localで1開始、欠落なしの連番。同一campaign内で一意。 |
+| `occurred_at` | `OccurredAt`。ASCIIの正確な`YYYY-MM-DDTHH:MM:SSZ`と実在する日時だけ。offset、fraction、local time、lowercase `z`を受理しない。 |
+| `origin` | 一般Eventは`in_world | table_correction`だけ。`TurnReverted`は`Literal["table_correction"]`だけで、`system`は追加しない。 |
+| `visibility` | `Visibility`。Event単位の可視範囲。 |
+| `payload` | Event subtypeごとのstrict ContractModel。raw input、Narrative、Transcript、Telemetry、API keyを入れない。 |
+
+`sequence`の連番と`event_id` uniquenessはparse後のcanonical sequence validationで検証する。
+複数Eventの並びは入力sequence順を使い、`occurred_at`でsortしない。DST foldなどの`fold`を
+`occurred_at`のsortで解決しない。
+
+| Event type | `session_id / scene_id / turn_id` context |
+|---|---|
+| `CampaignCreated` | `null / null / null` |
+| `SessionStarted` | `required / null / null` |
+| `SceneStarted` / `SceneEnded` | `required / required / null` |
+| `PlayerInputAccepted` / `DiceRolled` / `ResourceChanged` / `CharacterMoved` / `ClockAdvanced` / `TurnAwaitingPlayer` / `TurnResumed` / `TurnAborted` / `TurnCommitted` | `required / required / required` |
+| `FactAsserted` / `FactSuperseded` | `required / nullable / nullable` |
+| `TurnReverted` | `required / nullable / nullable` |
+| `SessionEnded` | `required / null / null` |
+
+#### 17 payloadのfield / type / effect
+
+| Event type | payload field / type | Projectionへのeffect |
+|---|---|---|
+| `CampaignCreated` | `name: strict non-empty str` | Campaign名を設定する。 |
+| `SessionStarted` | `scenario_id: ScenarioId | None`、`title: strict non-empty str` | Sessionとscenario/titleを設定する。 |
+| `SceneStarted` | `label: strict non-empty str` | 現在Sceneとlabelを開始し、`scene_end_reason`を`None`へ戻す。 |
+| `SceneEnded` | `reason: SceneEndReason` | 現在Sceneを終了し、`scene_end_reason`を記録する。 |
+| `PlayerInputAccepted` | `turn_request_id: TurnRequestId`、`input_digest: LowercaseSha256` | Turnのcanonical inputを一度だけ受理する。digest以外のraw inputは保持しない。 |
+| `DiceRolled` | `campaign_seed: LowercaseSha256`、`action_id: ActionId`、`roll_index: strict non-negative int`、`derived_seed: LowercaseSha256`、`formula: strict non-empty str`、`result: strict int` | `derived_seed = H(campaign_seed, turn_id, action_id, roll_index)`の導出材料・seed・式・結果を監査可能なEventとして記録する。 |
+| `ResourceChanged` | `resource_id: ResourceId`、`entity_id: EntityId`、`delta: strict int` | 対象Entityのresource値へdeltaを適用する。 |
+| `CharacterMoved` | `character_id: CharacterId`、`from_location_id: LocationId | None`、`to_location_id: LocationId` | locationの前値と新値を検証して適用する。 |
+| `ClockAdvanced` | `clock_id: ClockId`、`delta: positive strict int` | clockをdeltaだけ進める。 |
+| `FactAsserted` | `kind: Literal["fact", "ruling", "agreement", "plan", "promise"]`、`holder: Literal["world", "player_character", "rumor"] | NpcId`、`subject_id: EntityId | None`、`predicate: strict non-empty str`、`value: FrozenJsonValue` | Event IDとordinalからFactを追加する。 |
+| `FactSuperseded` | `target_fact_id: FactId` | target Factのstatusをsupersededにする。 |
+| `TurnAwaitingPlayer` | `turn_request_id: TurnRequestId` | Turn statusをawaiting_playerへ進める。 |
+| `TurnResumed` | `turn_request_id: TurnRequestId` | Turn statusをrunningへ戻す。 |
+| `TurnAborted` | `turn_request_id: TurnRequestId`、`reason: Literal["failed", "cancelled", "table_correction"]` | Turn statusをabortedへ終端化する。 |
+| `TurnCommitted` | `turn_request_id: TurnRequestId` | Turn statusをcommittedへ終端化する。 |
+| `TurnReverted` | `target_turn_id: TurnId` | target Turnのstate / fact effectをProjectionから除外し、`reverted_turn_ids`へ表示する。statusは変えない。 |
+| `SessionEnded` | `reason: strict SessionEndReason` | `session_id`をclearせず、`session_end_reason`へreasonを設定する。 |
+
+`EmptyPayload`は作らない。raw input、LLM Narrative、Transcript、Telemetry、API key、prompt、
+secretはどのpayloadにも入れない。`DiceRolled`は上表の6 fieldをstrictに持ち、extra fieldを受理しない。
+`seed = H(campaign_seed, turn_id, action_id, roll_index)`を導出して`derived_seed`へ記録し、
+fixtureではcampaign seed、envelopeのturn ID、action ID、roll index、derived seed、formula、resultの
+全てを検証する。API keyとraw narrativeはfixtureにもログにも入れない。
+`session_end_reason`はSessionEnded専用であり、SceneEnded / SceneStartedが管理する
+`scene_end_reason`と混同しない。
+
+Dice seedのsignatureは次だけに固定する。
 
 ~~~python
-class SessionStartedEvent(ContractModel):
-    type: Literal["SessionStarted"]
-    event_id: EventId
-    event_version: Literal[1]
-    campaign_id: CampaignId
-    session_id: SessionId | None
-    scene_id: SceneId | None
-    turn_id: TurnId | None
-    sequence: int
-    occurred_at: str
-    origin: Literal["in_world", "table_correction"]
-    visibility: Visibility
-    payload: SessionStartedPayload
-
-DomainEvent: TypeAlias = Annotated[
-    CampaignCreatedEvent | SessionStartedEvent | SceneStartedEvent | SceneEndedEvent
-    | PlayerInputAcceptedEvent | DiceRolledEvent | ResourceChangedEvent
-    | CharacterMovedEvent | ClockAdvancedEvent | FactAssertedEvent
-    | FactSupersededEvent | TurnAwaitingPlayerEvent | TurnResumedEvent
-    | TurnAbortedEvent | TurnCommittedEvent | TurnRevertedEvent | SessionEndedEvent,
-    Field(discriminator="type"),
-]
-DOMAIN_EVENT_ADAPTER = TypeAdapter(DomainEvent)
-
-def parse_domain_event(input_value: object) -> DomainEvent: ...
-def parse_domain_event_sequence(inputs: Sequence[object]) -> tuple[DomainEvent, ...]: ...
-def derive_fact_id(event_id: EventId, ordinal: int) -> FactId: ...
-def rebuild_projection(events: Sequence[DomainEvent]) -> Projection: ...
-def project_turn_status(events: Sequence[DomainEvent]) -> TurnStatus: ...
+def derive_dice_seed(
+    campaign_seed: LowercaseSha256,
+    turn_id: TurnId,
+    action_id: ActionId,
+    roll_index: StrictInt,
+) -> LowercaseSha256: ...
 ~~~
 
-DomainEventValidationIssueはpath、code（schema、unknown_field、unknown_event、unknown_version、
-invalid_id、invalid_sequence、invalid_payload）、messageを持つfrozen ContractModelとする。
-Pydantic ValidationErrorはDomainEventValidationErrorへ変換する。raw JSONをDomainEventとして
-扱わず、event_version != 1、unknown field、ID grammar、payloadの欠落・余分field・型不正を
-期待codeでrejectする。
+#### Fact ID導出
 
-TranscriptEntryとTelemetryEntryはDomainEvent unionに含めず、Projection reducerの入力にも
-含めない。Projectionはapplied_through_sequence、immutable state、facts、frozensetの
-reverted_turn_idsを持つ。sequenceはCampaign内で厳密増加し、occurred_atはゲーム判断に
-使わない。TurnRevertedはEventを削除せず、対象Turnの効果だけをrebuildで除外する。
-PlayerInputAccepted、TurnAwaitingPlayer、TurnResumed、TurnCommitted、TurnAbortedの遷移と
-same-request resend、再起動後awaiting_playerをEvent列から再構築する。
+`derive_fact_id(event_id: EventId, ordinal: int) -> FactId`は次で固定する。
+
+- grammarは`^fact:[0-9a-f]{64}:(0|[1-9][0-9]*)$`。
+- preimageは`b"neontof:fact-id:v1\0" + event_id ASCII + b"\0" + decimal ordinal`とする。
+- SHA-256 digestのlowercase hexを使い、`fact:{digest}:{ordinal}`を返す。
+- `ordinal`はstrictな`int`、0-based、0以上とし、`bool`はrejectする。
+
+固定vectorは次の通り。実装はこの値をテストへそのまま記録する。
+
+| `event_id / ordinal` | expected `FactId` |
+|---|---|
+| `event:alpha / 0` | `fact:bd64e06f407fa7ae48f0dd712f0817622f6fab8b9ea11905979745c1426b2ef4:0` |
+| `event:alpha / 1` | `fact:977fdf29ed9b0faeaf966c4ac373e2e209c939d32b4329674b922d21680de4e2:1` |
+| `event:z9 / 42` | `fact:7d9055cf0f3053fabcf237138adc2ec54a67353e2e9b953be2239c3caf050b95:42` |
+
+#### ParserとDomainEventValidationError
+
+public signatureは次だけにする。P0ではdecoded `Mapping`をpublicに受理しない。
+
+~~~python
+def parse_domain_event(raw: str | bytes) -> DomainEvent: ...
+def parse_domain_event_sequence(raw: str | bytes) -> tuple[DomainEvent, ...]: ...
+def derive_fact_id(event_id: EventId, ordinal: int) -> FactId: ...
+def rebuild_projection(events: Sequence[DomainEvent]) -> Projection: ...
+def project_turn_status(turn_id: TurnId, events: Sequence[DomainEvent]) -> TurnStatus: ...
+~~~
+
+`parse_domain_event`はUTF-8 JSON object、`parse_domain_event_sequence`はUTF-8 JSON arrayだけを
+rawとして受理する。parser内部のprivate adapterは次の3つだけを持ち、全てraw JSON境界から
+`TypeAdapter.validate_json(raw, strict=True)`を呼ぶ。
+
+~~~python
+_RAW_EVENT_ADAPTER = TypeAdapter(...)
+_DOMAIN_EVENT_V1_ADAPTER = TypeAdapter(...)
+_SEQUENCE_JSON_ADAPTER = TypeAdapter(...)
+~~~
+
+version probeは`_RAW_EVENT_ADAPTER.validate_json(raw, strict=True)`、単体v1の検証は
+`_DOMAIN_EVENT_V1_ADAPTER.validate_json(raw, strict=True)`、sequenceの配列検証は
+`_SEQUENCE_JSON_ADAPTER.validate_json(raw, strict=True)`で行う。sequence要素はdecoded objectを
+`validate_python`へ渡さず、UTF-8 JSON bytesへ再シリアライズして`parse_domain_event`へ渡す。
+version probe、単体v1、sequence要素の全てをraw JSON境界から検証し、3 adapterはprivateで
+public exportにしない。JSON decode済みの`Mapping`、任意object、`Sequence[object]`をpublic parser
+signatureへ戻さない。public parser内部のcanonical経路ではdecoded `Mapping`への
+`validate_python`も使わない。
+
+`DomainEventValidationIssue`は`path`、`code`、`message`だけを持つfrozen ContractModelとする。許可する
+codeは`schema`、`unknown_field`、`unknown_event`、`unknown_version`、`invalid_id`、
+`invalid_sequence`、`invalid_payload`である。raw input、URL、ctx、repr、secret、cause、
+contextはissueへ保存しない。Pydantic errorを変換するときも
+`errors(include_input=False, include_url=False, include_context=False)`相当で取り出す。
+JSON、Pydantic、sequenceのvalidation failureは`DomainEventValidationError(ValueError)`だけを
+raiseする。signatureは次の通りで、`issues`だけをread-onlyで公開し、他のcustom instance attributeを
+持たせない。
+
+~~~python
+class DomainEventValidationError(ValueError):
+    def __init__(self, issues: tuple[DomainEventValidationIssue, ...]) -> None: ...
+
+    @property
+    def issues(self) -> tuple[DomainEventValidationIssue, ...]: ...
+~~~
+
+wrong Python typeはrawのreprを含まない固定`TypeError("raw must be str or bytes")`だけをraiseする。
+Pydantic errorはcatch中に`errors(include_input=False, include_url=False, include_context=False)`相当の
+sanitized issueへ抽出し、catchを抜けてから`DomainEventValidationError(issues) from None`としてraiseする。
+元errorをcause / contextへ保持しない。sentinel testは入力、`str`、`repr`、`args`、`__dict__`、
+`__cause__`、`__context__`、`.issues`、通常log、fixtureの全観測面にraw input、`input_value`、URL、
+ctx、secret sentinelが残らないことと、このraise規則を確認する。
+
+#### Projection concrete fields
+
+`projection.py`が次のconcrete modelとreducerを所有する。公開collectionはimmutable tuple /
+frozensetだけで、resource / location / clockはstable ID順、factsはfact ID順、
+`audit_event_ids`は入力sequence順にcanonicalizeする。
+
+~~~python
+class ResourceState(ContractModel):
+    resource_id: ResourceId
+    entity_id: EntityId
+    value: StrictInt
+
+class CharacterLocation(ContractModel):
+    character_id: CharacterId
+    location_id: LocationId | None
+
+class ClockState(ContractModel):
+    clock_id: ClockId
+    value: StrictInt
+
+class FactRecord(ContractModel):
+    fact_id: FactId
+    event_id: EventId
+    kind: FactKind
+    holder: FactHolder
+    subject_id: EntityId | None
+    predicate: str
+    value: FrozenJsonValue
+    visibility: Visibility
+    status: Literal["active", "superseded"]
+
+class Projection(ContractModel):
+    campaign_id: CampaignId | None
+    campaign_name: str | None
+    session_id: SessionId | None
+    scenario_id: ScenarioId | None
+    session_title: str | None
+    scene_id: SceneId | None
+    scene_label: str | None
+    scene_end_reason: SceneEndReason | None
+    session_end_reason: SessionEndReason | None
+    resources: tuple[ResourceState, ...]
+    locations: tuple[CharacterLocation, ...]
+    clocks: tuple[ClockState, ...]
+    facts: tuple[FactRecord, ...]
+    reverted_turn_ids: frozenset[TurnId]
+    applied_through_sequence: StrictInt
+    audit_event_ids: tuple[EventId, ...]
+~~~
+
+`rebuild_projection`はglobalな単一campaignの全canonical Event列を、sequence、event ID、wire invariant
+を先に検証する。各`TurnReverted`について、payloadのtargetがそのEventより前に一度だけ
+`TurnCommitted`されたTurnであり、同一targetへの`TurnReverted`も一度だけであることをfail-closedに
+検証する。検証に失敗したらProjectionを返さない。その後、対象Turnのstate / fact effectを適用せず、
+`TurnReverted`自身を含む全監査Eventを`audit_event_ids`へ残す。input Eventを削除・sort・
+`occurred_at`順へ並べ替えない。
+
+#### Turn status遷移
+
+`project_turn_status(turn_id, events)`の`events`は、事前にfilterされた列ではなく、単一campaignの
+全canonical Event列である。まず全列をcampaign ID、sequenceの1開始連番、event ID uniqueness、
+Event envelope、payload、origin、同一campaignのwire invariantまで検証する。その全検証後にだけ
+`event.turn_id == turn_id`の対象Eventを選択する。別turnの正当なEventはrejectせず無視する。
+`turn_id=null`のCampaign / Session / Scene / Fact Eventも無視し、`TurnReverted`だけはpayloadの
+`target_turn_id`が対象ならstatusを変更せず扱う。対象Eventが一つも無ければ`pending`を返す。
+
+対象Turnの`PlayerInputAccepted`で設定した`turn_request_id`を基準に、対象Turnの全Eventで同一
+request IDを要求する。同じturn requestの遷移は次だけを許可する。
+
+| current / Event | next status |
+|---|---|
+| no target Event / initial | `pending` |
+| initial / `PlayerInputAccepted` | `pending` |
+| `pending` / `TurnResumed` | `running` |
+| `running` / `TurnAwaitingPlayer` | `awaiting_player` |
+| `awaiting_player` / `TurnResumed` | `running` |
+| `running` or `awaiting_player` / `TurnCommitted` | `committed` |
+| `pending` or `running` or `awaiting_player` / `TurnAborted` | `aborted` |
+| `committed` / `TurnReverted` targeting this Turn | `committed`（status unchanged） |
+
+terminal後の対象Event、対象Turnのrequest ID mismatch、二重`PlayerInputAccepted`、未許可遷移は
+rejectする。別turnの正当なEventのrequest ID mismatchは無視する。`TurnReverted`はpayloadのtargetが
+対象ならstatusを変えず、`Projection.reverted_turn_ids`で表示する。P0で許可するrevertはcanonicalな
+committed Turnへの一回の`origin='table_correction'`だけで、任意revertはNon-goalである。
+
+TranscriptEntryとTelemetryEntryは`DomainEvent` unionにも`rebuild_projection`の入力にも含めない。
+sequenceはCampaign内で厳密な1開始連番、`event_id`はunique、`occurred_at`は表示用metadataであり、
+ゲーム判断や順序付けへ使わない。
 
 ### 9.4 Test First、RED / Green
 
-- [ ] ContractModelのstrict、extra forbid、frozen、tuple / frozenset、mutation、
-  revalidation sabotageを先に書く。
-- [ ] valid Eventをparserへ渡す最初のREDを、runner起動後のmodule/export不在で作る。
-- [ ] unknown event、unknown top-level / payload field、version 2、ID grammar違反、全Eventの
-  必須payload欠落・型不正をfixtureごとに書き、ValidationIssue codeを期待する。
-- [ ] raw fixtureをparse_domain_event_sequenceで検証してからreference reducerへ渡す。
-- [ ] 同一Event配列の2回rebuild deep equal、Fact ID、TurnReverted、sequence重複、unknown
-  version、same-request resend、awaiting_player restartをtestする。
-- [ ] Transcript / TelemetryをDomainEventへ渡せないnegative mypy fixtureを作り、通常quality
-  からだけ除外して独立mypy commandのexpected exit 1を記録する。
-- [ ] 次を実行し、初回REDと最小実装後Greenを記録する。
+- [ ] `ContractModel`のstrict、extra forbid、frozen、`revalidate_instances="always"`、
+  tuple / frozenset、finite float、bool/int分離、alias切断、nested mutation、revalidation
+  sabotageを先に書く。`tests/test_config.py`でcanonical baseとのidentityも固定する。
+- [ ] 7つのraw fixtureを全てproduction `parse_domain_event_sequence`へ渡し、decoded Mappingを
+  直接渡す経路を作らない。unknown field / version / event、payload不正、sequence欠落、
+  duplicate `event_id`、ID grammar違反、same-request duplicate、wrong origin、存在しない日時・
+  offset・fraction・lowercase `z`の`occurred_at`をfixtureごとに検証し、wrong Python typeはraw reprを
+  含まない固定`TypeError`だけを返すことを検証する。
+- [ ] 17 Event typeのpayloadを最低1件ずつ、field type、strict int、nullable、effectまで検証し、
+  unknown top-level / payload fieldと`TurnStarted` / `EmptyPayload`をrejectする。
+- [ ] minimal fixtureのseq 6 `DiceRolled`で`campaign_seed`、envelopeの`turn_id`、`action_id`、
+  `roll_index`、`derived_seed`、`formula`、`result`を全て固定し、`seed = H(campaign_seed, turn_id,
+  action_id, roll_index)`の導出値とresultを同時に検証する。API keyとraw narrativeはfixtureにない。
+- [ ] raw fixture → production parser → production `rebuild_projection`の順だけを使う。
+  `tests/contracts/support/reference_projection.py`、reference reducer、期待値生成helperは作らない。
+- [ ] 同一Event列の2回rebuildがdeep equal、sequence 1開始・欠落なし、`occurred_at`非sort、
+  Fact ID vector、TurnRevertedの先行committed target / 一回性のfail-closed検証と監査Event保持、
+  turn status、same-request、別turn Eventの無視、null context Eventの無視、対象Eventなしのpending、
+  再起動後`awaiting_player`をtestする。
+- [ ] `tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py`はproductionから実型
+  `DomainEvent`、`TranscriptEntry`、`TelemetryEntry`をimportするtyped sinkへTranscript / Telemetryを
+  渡す。`# type: ignore`、`assert_type`、`cast(`を置かず、negative mypyはちょうど2件の`[arg-type]`、
+  それ以外のerror 0件、exit 1を記録する。
+- [ ] secret redaction testで、raw input / URL / ctx / repr / cause / context / API key sentinelが
+  `DomainEventValidationIssue`、`DomainEventValidationError`の`str` / `repr` / `args` / `__dict__` /
+  `__cause__` / `__context__` / `.issues`、通常log、fixture、payloadへ残らないことを確認する。
+- [ ] `tests/test_config.py`のconfig/app regression、`tests/test_repository_contracts.py`の
+  11-path production manifestと`rglob`集合差分、P0-01bで作成済みApplicationのhealth regression
+  を同じP0-03変更で壊さない。
 
-~~~powershell
-& $neontofPython -m pytest tests/contracts/test_event_parser.py tests/contracts/test_domain.py tests/contracts/test_turn_status.py -q
+`minimal-session.v1.json`はEvent `event:e01`〜`event:e27`をsequence 1〜27へ一つずつ持つ。
+type列は次の固定順であり、別の最終sequenceや期待値へ変更しない。
+
+~~~text
+1 CampaignCreated
+2 SessionStarted
+3 SceneStarted
+4 PlayerInputAccepted (turn:one)
+5 TurnResumed (turn:one)
+6 DiceRolled
+7 ResourceChanged
+8 CharacterMoved
+9 ClockAdvanced
+10 FactAsserted (turn:one)
+11 TurnAwaitingPlayer
+12 TurnResumed
+13 TurnCommitted
+14 PlayerInputAccepted (turn:two)
+15 TurnResumed (turn:two)
+16 ResourceChanged
+17 CharacterMoved
+18 ClockAdvanced
+19 FactAsserted (turn:two)
+20 TurnCommitted
+21 FactSuperseded (table correction, target turn:one Fact)
+22 SceneEnded
+23 SceneStarted
+24 PlayerInputAccepted (turn:three)
+25 TurnAborted
+26 TurnReverted (target_turn_id=turn:two, origin=table_correction)
+27 SessionEnded
 ~~~
+
+このfixtureのhandwritten expected Projectionは次で固定する。seq 4〜13は`turn:one`、seq 14〜20は
+`turn:two`、seq 24〜25は`turn:three`である。seq 21の`FactSuperseded`は`event:e10 / 0`の
+turn:one Factをsupersedeするtable correction、seq 26の`TurnReverted`は
+`target_turn_id='turn:two'`かつ`origin='table_correction'`である。したがってrevert対象のturn:two
+resource / location / clock / Fact effectは消えるが、seq 26を含む全監査Eventは残る。seq 22の
+`SceneEnded`とseq 23の`SceneStarted`の後は`scene_end_reason=None`であり、seq 27の
+`SessionEnded`は`session_end_reason='completed'`を設定する。
+
+~~~python
+Projection(
+    campaign_id='campaign:alpha',
+    campaign_name='NeontoF',
+    session_id='session:one',
+    scenario_id='scenario:minimal',
+    session_title='Minimal Session',
+    scene_id='scene:hall',
+    scene_label='Hall',
+    scene_end_reason=None,
+    session_end_reason='completed',
+    resources=(
+        ResourceState(resource_id='resource:gold', entity_id='entity:hero', value=5),
+    ),
+    locations=(
+        CharacterLocation(character_id='character:hero', location_id='location:gate'),
+    ),
+    clocks=(ClockState(clock_id='clock:session', value=2),),
+    facts=(
+        FactRecord(
+            fact_id='fact:27cd642ddc52f1783e19c77e74c0f38a6bcf4ed9e8f200232704938d155b34d:0',
+            event_id='event:e10',
+            kind='fact',
+            holder='world',
+            subject_id='entity:door',
+            predicate='is_open',
+            value=True,
+            visibility='player_visible',
+            status='superseded',
+        ),
+    ),
+    reverted_turn_ids=frozenset({'turn:two'}),
+    applied_through_sequence=27,
+    audit_event_ids=(
+        'event:e01', 'event:e02', 'event:e03', 'event:e04', 'event:e05',
+        'event:e06', 'event:e07', 'event:e08', 'event:e09', 'event:e10',
+        'event:e11', 'event:e12', 'event:e13', 'event:e14', 'event:e15',
+        'event:e16', 'event:e17', 'event:e18', 'event:e19', 'event:e20',
+        'event:e21', 'event:e22', 'event:e23', 'event:e24', 'event:e25',
+        'event:e26', 'event:e27',
+    ),
+)
+~~~
+
+最終ProjectionのFactはturn:oneの`event:e10 / 0`から導出した
+`fact:27cd642ddc52f1783e19c77e74c0f38a6bcf4ed9e8f200232704938d155b34d:0`だけで、statusは
+`superseded`である。turn:twoの`event:e19 / 0`から導出した
+`fact:eb2fd634b619f44a9e029abaff4b66d4bf82f699f6ebb6fd5b988cfaa0c6700e:0`はrevertにより不在である。
+期待値はfixtureから自動生成せず、testへ手書きする。
 
 ### 9.5 実行コマンドと期待結果
 
+PowerShellの各blockは別々に実行できるよう、毎回repository rootと`.venv/Scripts/python.exe`
+を解決する。各native commandの直後に`$LASTEXITCODE`を保存し、期待値以外は即座にthrowする。
+現在のshellのlocationや`$neontofPython`のような前blockの変数を引き継がない。
+
+#### focused RED
+
 ~~~powershell
-$env:PYTHONPATH = (Join-Path (Get-Location) "src")
-& $neontofPython -m pytest tests/contracts/test_contract_model.py -q
-& $neontofPython -m pytest tests/contracts/test_event_parser.py -q
-& $neontofPython -m pytest tests/contracts/test_domain.py tests/contracts/test_turn_status.py -q
-& $neontofPython -m mypy --strict src tests --exclude "tests/typecheck_fixtures"
-rg -n "Event Log|Projection|Transcript|Telemetry|TurnReverted|TurnAwaitingPlayer|TurnResumed|TurnAborted|awaiting_player|event_version|parse_domain_event|unknown_version|invalid_payload" docs/specs/core-domain-and-events.md src/neontof/contracts
-rg -n "setState|updateState|mutateState|saveProjection|model_construct\(|\bcast\(" src/neontof tests --glob "!tests/typecheck_fixtures/**"
+$repositoryRoot = (& git rev-parse --show-toplevel | Out-String).Trim()
+$repositoryRootExit = $LASTEXITCODE
+if ($repositoryRootExit -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) { throw "repository root resolution failed." }
+$repositoryRoot = [System.IO.Path]::GetFullPath($repositoryRoot)
+Set-Location -LiteralPath $repositoryRoot
+$pythonExe = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '.venv/Scripts/python.exe'))
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "P0-03 .venv python was not found." }
+$env:PYTHONPATH = Join-Path $repositoryRoot 'src'
+$focusedOutput = (& $pythonExe -m pytest tests/contracts/test_contract_model.py tests/contracts/test_domain.py tests/contracts/test_event_parser.py tests/contracts/test_turn_status.py -q 2>&1 | Out-String)
+$focusedRedExit = $LASTEXITCODE
+"$focusedOutput"
+if ($focusedRedExit -ne 1) { throw "focused RED expected exit 1, got $focusedRedExit." }
+foreach ($fragment in @('SyntaxError', 'FileNotFoundError', 'No such file', 'INTERNALERROR', 'collection error', 'collected 0', 'file or directory not found')) {
+    if ($focusedOutput -match [regex]::Escape($fragment)) { throw "focused RED contains forbidden failure fragment: $fragment" }
+}
+$allowedRedExceptionPattern = '(?i)(ModuleNotFoundError|ImportError).*(neontof\.contracts|ContractModel|DomainEvent|Projection|parse_domain_event|project_turn_status)'
+$redExceptionLines = @($focusedOutput -split "`r?`n" | Where-Object { $_ -match '(?i)([A-Za-z]+Error|ImportError)' })
+if ($redExceptionLines.Count -eq 0 -or ($redExceptionLines | Where-Object { $_ -notmatch $allowedRedExceptionPattern }).Count -ne 0) {
+    throw "focused RED was not limited to an expected contracts module/export absence."
+}
+"focused RED exit $focusedRedExit"
 ~~~
 
-PASSはpytest全成功、mypy error 0、必須spec語、State直接更新API・model_construct・castの
-production / normal test検索0件である。
+これはrunner起動後のexpectedなcontracts module/export不在だけをRED証拠とする。実装後は同じfocused
+command（同じ4 test pathと`-q`）をstdout / stderr付きで再実行し、禁止fragmentなし・exit exactly 0を
+Greenとして確認する。exit 0以外、またはRED専用fragmentが残る場合はFAILとする。
+
+~~~powershell
+$repositoryRoot = (& git rev-parse --show-toplevel | Out-String).Trim()
+$repositoryRootExit = $LASTEXITCODE
+if ($repositoryRootExit -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) { throw "repository root resolution failed." }
+$repositoryRoot = [System.IO.Path]::GetFullPath($repositoryRoot)
+Set-Location -LiteralPath $repositoryRoot
+$pythonExe = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '.venv/Scripts/python.exe'))
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "P0-03 .venv python was not found." }
+$env:PYTHONPATH = Join-Path $repositoryRoot 'src'
+$focusedGreenOutput = (& $pythonExe -m pytest tests/contracts/test_contract_model.py tests/contracts/test_domain.py tests/contracts/test_event_parser.py tests/contracts/test_turn_status.py -q 2>&1 | Out-String)
+$focusedGreenExit = $LASTEXITCODE
+$focusedGreenOutput
+if ($focusedGreenExit -ne 0) { throw "focused Green expected exit 0, got $focusedGreenExit." }
+if ($focusedGreenOutput -match '(?i)(ModuleNotFoundError|ImportError)') { throw 'focused Green still contains a missing module/export error.' }
+foreach ($fragment in @('SyntaxError', 'FileNotFoundError', 'No such file', 'INTERNALERROR', 'collection error', 'collected 0', 'file or directory not found')) {
+    if ($focusedGreenOutput -match [regex]::Escape($fragment)) { throw "focused Green contains forbidden failure fragment: $fragment" }
+}
+~~~
+
+#### compileall / ruff / normal mypy / all pytest
+
+~~~powershell
+$repositoryRoot = (& git rev-parse --show-toplevel | Out-String).Trim()
+$repositoryRootExit = $LASTEXITCODE
+if ($repositoryRootExit -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) { throw "repository root resolution failed." }
+$repositoryRoot = [System.IO.Path]::GetFullPath($repositoryRoot)
+Set-Location -LiteralPath $repositoryRoot
+$pythonExe = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '.venv/Scripts/python.exe'))
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "P0-03 .venv python was not found." }
+$env:PYTHONPATH = Join-Path $repositoryRoot 'src'
+
+& $pythonExe -m compileall -q src
+$compileallExit = $LASTEXITCODE
+if ($compileallExit -ne 0) { throw "compileall failed with exit $compileallExit." }
+
+& $pythonExe -m ruff format --check src tests
+$ruffFormatExit = $LASTEXITCODE
+if ($ruffFormatExit -ne 0) { throw "ruff format check failed with exit $ruffFormatExit." }
+
+& $pythonExe -m ruff check src tests
+$ruffCheckExit = $LASTEXITCODE
+if ($ruffCheckExit -ne 0) { throw "ruff check failed with exit $ruffCheckExit." }
+
+& $pythonExe -m mypy --strict src tests --exclude tests/typecheck_fixtures
+$mypyExit = $LASTEXITCODE
+if ($mypyExit -ne 0) { throw "normal mypy failed with exit $mypyExit." }
+
+& $pythonExe -m pytest -q
+$pytestExit = $LASTEXITCODE
+if ($pytestExit -ne 0) { throw "all pytest failed with exit $pytestExit." }
+~~~
+
+期待値はcompileall / ruff format / ruff check / normal mypy / 全pytestが全てexit 0である。
+normal mypyへnegative fixtureを混ぜない。
+
+#### negative mypy
+
+~~~powershell
+$repositoryRoot = (& git rev-parse --show-toplevel | Out-String).Trim()
+$repositoryRootExit = $LASTEXITCODE
+if ($repositoryRootExit -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) { throw "repository root resolution failed." }
+$repositoryRoot = [System.IO.Path]::GetFullPath($repositoryRoot)
+Set-Location -LiteralPath $repositoryRoot
+$pythonExe = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '.venv/Scripts/python.exe'))
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "P0-03 .venv python was not found." }
+
+$negativeFixture = 'tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py'
+$negativeOutput = (& $pythonExe -m mypy --strict $negativeFixture 2>&1 | Out-String)
+$negativeExit = $LASTEXITCODE
+$negativeOutput
+$negativeLines = @($negativeOutput -split "`r?`n" | Where-Object { $_ -ne '' })
+$errorLines = @($negativeLines | Where-Object { $_ -match 'error:' })
+$argTypeLines = @($errorLines | Where-Object { $_ -match '\[arg-type\]' })
+$otherErrorLines = @($errorLines | Where-Object { $_ -notmatch '\[arg-type\]' })
+if ($negativeExit -ne 1) { throw "negative mypy expected exit 1, got $negativeExit." }
+if ($errorLines.Count -ne 2 -or $argTypeLines.Count -ne 2 -or $otherErrorLines.Count -ne 0) { throw "negative mypy error surface mismatch." }
+foreach ($fragment in @($negativeFixture, 'TranscriptEntry', 'TelemetryEntry', 'DomainEvent')) {
+    if ($negativeOutput -notmatch [regex]::Escape($fragment)) { throw "negative mypy output lacks fragment: $fragment" }
+}
+"negative mypy exit $negativeExit; arg-type=$($argTypeLines.Count); other-errors=$($otherErrorLines.Count)"
+~~~
+
+expected outputはstdout / stderrを捕捉したexit 1、error lines exactly 2、両方`[arg-type]`、
+その他error 0、fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent`の各fragmentあり
+である。fixtureには`# type: ignore`、`assert_type`、`cast(`を置かない。
+
+#### required語検索とforbidden検索
+
+required語はOR正規表現へまとめず、一語ずつ`rg -n -w`する。各`rg`の直後にexit codeを保存し、
+required語のexit 1やtool errorはFAILとする。
+
+~~~powershell
+$repositoryRoot = (& git rev-parse --show-toplevel | Out-String).Trim()
+$repositoryRootExit = $LASTEXITCODE
+if ($repositoryRootExit -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) { throw "repository root resolution failed." }
+$repositoryRoot = [System.IO.Path]::GetFullPath($repositoryRoot)
+Set-Location -LiteralPath $repositoryRoot
+$pythonExe = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '.venv/Scripts/python.exe'))
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "P0-03 .venv python was not found." }
+
+$requiredWords = @('Event', 'Projection', 'Transcript', 'Telemetry', 'TurnReverted', 'TurnAwaitingPlayer', 'TurnResumed', 'TurnAborted', 'awaiting_player', 'event_version', 'parse_domain_event', 'unknown_version', 'invalid_payload')
+foreach ($word in $requiredWords) {
+    & rg -n -w -- $word docs/specs/core-domain-and-events.md src/neontof/contracts
+    $requiredExit = $LASTEXITCODE
+    if ($requiredExit -ne 0) { throw "required word '$word' search failed with exit $requiredExit." }
+}
+
+$productionForbiddenPatterns = @('TurnStarted', 'EmptyPayload', 'reference_projection', 'Plugin', 'Hook', 'Profile', 'ProviderRegistry')
+foreach ($pattern in $productionForbiddenPatterns) {
+    & rg -n -- $pattern src/neontof
+    $productionForbiddenExit = $LASTEXITCODE
+    if ($productionForbiddenExit -eq 1) { continue }
+    if ($productionForbiddenExit -eq 0) { throw "production forbidden hit for '$pattern'." }
+    throw "production forbidden search tool failure for '$pattern' with exit $productionForbiddenExit."
+}
+
+$sourceOnlyPatterns = @('openai', 'anthropic', 'sqlite3\.connect', 'sqlite3\.Connection', 'provider_registry')
+foreach ($pattern in $sourceOnlyPatterns) {
+    & rg -ni -- $pattern src/neontof
+    $sourceOnlyExit = $LASTEXITCODE
+    if ($sourceOnlyExit -eq 1) { continue }
+    if ($sourceOnlyExit -eq 0) { throw "source-only forbidden hit for '$pattern'." }
+    throw "source-only forbidden search tool failure for '$pattern' with exit $sourceOnlyExit."
+}
+
+$normalBypassPatterns = @('setState', 'updateState', 'mutateState', 'saveProjection', 'model_construct\(', 'cast\(')
+foreach ($pattern in $normalBypassPatterns) {
+    & rg -n -- $pattern src/neontof tests
+    $normalBypassExit = $LASTEXITCODE
+    if ($normalBypassExit -eq 1) { continue }
+    if ($normalBypassExit -eq 0) { throw "validation bypass hit for '$pattern'." }
+    throw "validation bypass search tool failure for '$pattern' with exit $normalBypassExit."
+}
+
+$negativeFixture = 'tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py'
+& rg -n -- '# type: ignore' $negativeFixture
+$negativeIgnoreExit = $LASTEXITCODE
+if ($negativeIgnoreExit -eq 0) { throw 'negative fixture contains # type: ignore.' }
+if ($negativeIgnoreExit -ne 1) { throw "negative fixture # type: ignore search failed with exit $negativeIgnoreExit." }
+& rg -n -- 'assert_type' $negativeFixture
+$negativeAssertTypeExit = $LASTEXITCODE
+if ($negativeAssertTypeExit -eq 0) { throw 'negative fixture contains assert_type.' }
+if ($negativeAssertTypeExit -ne 1) { throw "negative fixture assert_type search failed with exit $negativeAssertTypeExit." }
+& rg -n -- 'cast\(' $negativeFixture
+$negativeCastExit = $LASTEXITCODE
+if ($negativeCastExit -eq 0) { throw 'negative fixture contains cast(.' }
+if ($negativeCastExit -ne 1) { throw "negative fixture cast( search failed with exit $negativeCastExit." }
+~~~
+
+forbidden検索は実装内容とテスト内容を分離する。`TurnStarted`、`EmptyPayload`、
+`reference_projection`、`Plugin`、`Hook`、`Profile`、`ProviderRegistry`はproduction sourceの
+`src/neontof`だけをscanし、testsがreject caseとして語を含むことを許す。一方、
+`setState`、`updateState`、`mutateState`、`saveProjection`、`model_construct`、`cast`は
+`src/neontof`と通常testsをscanし、negative fixtureをbypass scan全体から除外しない。
+negative fixture自身の`# type: ignore`、`assert_type`、`cast(`は別々の`rg`で各exit 1を要求する。
+source-only patternには`openai`、`anthropic`、`sqlite3.connect`、`sqlite3.Connection`、
+`provider_registry`を含める。全`rg`でexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上を
+tool failureとして扱う。
+
+#### rglob source scan
+
+~~~powershell
+$repositoryRoot = (& git rev-parse --show-toplevel | Out-String).Trim()
+$repositoryRootExit = $LASTEXITCODE
+if ($repositoryRootExit -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) { throw "repository root resolution failed." }
+$repositoryRoot = [System.IO.Path]::GetFullPath($repositoryRoot)
+Set-Location -LiteralPath $repositoryRoot
+$pythonExe = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '.venv/Scripts/python.exe'))
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "P0-03 .venv python was not found." }
+
+$rglobOutput = & $pythonExe -c "from pathlib import Path; expected=['src/neontof/__init__.py','src/neontof/main.py','src/neontof/config.py','src/neontof/app.py','src/neontof/contracts/__init__.py','src/neontof/contracts/base.py','src/neontof/contracts/ids.py','src/neontof/contracts/domain.py','src/neontof/contracts/event_parser.py','src/neontof/contracts/projection.py','src/neontof/contracts/turn_status.py']; actual=sorted(path.as_posix() for path in Path('src/neontof').rglob('*.py')); print('actual=', actual); raise SystemExit(0 if actual == sorted(expected) else 1)"
+$rglobExit = $LASTEXITCODE
+$rglobOutput
+if ($rglobExit -ne 0) { throw "rglob production manifest mismatch with exit $rglobExit." }
+~~~
+
+`rglob`のactual集合と11相対path manifestが完全一致し、extra source / missing sourceが0件で
+あることを確認する。
+
+#### P0-01bで確定した最終Gateの再実行
+
+P0-03の最終Gateでは、P0-01bで確定したlock / install / compileall / ruff / mypy / pytest /
+network / API key / lifecycle / workers=2 / source scanを再実行する。最初に
+`docs/agent-guide/build-and-verify.md`のfresh venv / lock / install blockを、Python 3.14.3、
+`requirements-dev.in`、`requirements.lock.txt`、`--generate-hashes`、`pip install --require-hashes`
+を含めて一字一句変更せずに実行する。その実行は既存repository `.venv`だけを証拠にせず、uniqueな
+TEMPまたはfresh isolated venvを作る。既存`.venv`はfocused local checkにのみ使え、fresh Gateの代用に
+しない。`pip-compile exit 0`、machine-local path 0、openai 0、fresh install / pip check /
+compileall / ruff format / ruff check / mypy / pytestのexit 0、cleanup後の存在Falseを実出力で記録する。
+
+~~~powershell
+$repositoryRoot = (& git rev-parse --show-toplevel | Out-String).Trim()
+$repositoryRootExit = $LASTEXITCODE
+if ($repositoryRootExit -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) { throw "repository root resolution failed." }
+$repositoryRoot = [System.IO.Path]::GetFullPath($repositoryRoot)
+Set-Location -LiteralPath $repositoryRoot
+$tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+$freshRoot = [System.IO.Path]::GetFullPath((Join-Path $tempRoot ('neontof-p0-03-final-' + [guid]::NewGuid().ToString('N'))))
+$tempPrefix = $tempRoot
+if (-not $tempPrefix.EndsWith([System.IO.Path]::DirectorySeparatorChar)) { $tempPrefix += [System.IO.Path]::DirectorySeparatorChar }
+if ($freshRoot.Equals($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+    -not $freshRoot.StartsWith($tempPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Refusing to use a fresh gate path outside TEMP." }
+$freshVenv = [System.IO.Path]::GetFullPath((Join-Path $freshRoot 'venv'))
+$pythonPathWasPresent = Test-Path -LiteralPath 'Env:PYTHONPATH'
+$pythonPathValue = if ($pythonPathWasPresent) { $env:PYTHONPATH } else { $null }
+$env:PYTHONPATH = Join-Path $repositoryRoot 'src'
+
+$openAiKeyWasPresent = Test-Path -LiteralPath 'Env:OPENAI_API_KEY'
+$openAiKeyValue = if ($openAiKeyWasPresent) { $env:OPENAI_API_KEY } else { $null }
+$anthropicKeyWasPresent = Test-Path -LiteralPath 'Env:ANTHROPIC_API_KEY'
+$anthropicKeyValue = if ($anthropicKeyWasPresent) { $env:ANTHROPIC_API_KEY } else { $null }
+try {
+    Remove-Item -LiteralPath 'Env:OPENAI_API_KEY' -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'Env:ANTHROPIC_API_KEY' -ErrorAction SilentlyContinue
+    if ((Test-Path -LiteralPath 'Env:OPENAI_API_KEY') -or (Test-Path -LiteralPath 'Env:ANTHROPIC_API_KEY')) { throw "API key variable remained in the test process." }
+
+    New-Item -ItemType Directory -LiteralPath $freshRoot -Force | Out-Null
+    py -3.14 --version
+    $pythonVersionExit = $LASTEXITCODE
+    if ($pythonVersionExit -ne 0) { throw "Python version check failed with exit $pythonVersionExit." }
+    py -3.14 -c "import sys; assert sys.version_info[:3] == (3, 14, 3); print(sys.version)"
+    $pythonAssertExit = $LASTEXITCODE
+    if ($pythonAssertExit -ne 0) { throw "Python 3.14.3 assertion failed with exit $pythonAssertExit." }
+    & py -3.14 -m venv $freshVenv
+    $venvCreateExit = $LASTEXITCODE
+    if ($venvCreateExit -ne 0) { throw "fresh venv creation failed with exit $venvCreateExit." }
+    $pythonExe = Join-Path $freshVenv 'Scripts/python.exe'
+    if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "fresh venv python was not found." }
+    & $pythonExe -c "import sys; assert sys.version_info[:3] == (3, 14, 3); print(sys.version)"
+    $freshPythonAssertExit = $LASTEXITCODE
+    if ($freshPythonAssertExit -ne 0) { throw "fresh venv Python assertion failed with exit $freshPythonAssertExit." }
+    & $pythonExe -m pip install --require-hashes -r requirements.lock.txt
+    $installExit = $LASTEXITCODE
+    if ($installExit -ne 0) { throw "locked install failed with exit $installExit." }
+    & $pythonExe -m pip check
+    $pipCheckExit = $LASTEXITCODE
+    if ($pipCheckExit -ne 0) { throw "pip check failed with exit $pipCheckExit." }
+    $openAiOutput = (& $pythonExe -c "import importlib.util; print('openai absent' if importlib.util.find_spec('openai') is None else 'openai present')" | Out-String).Trim()
+    $openAiExit = $LASTEXITCODE
+    if ($openAiExit -ne 0 -or $openAiOutput -ne 'openai absent') { throw "fresh environment openai absence check failed with exit $openAiExit." }
+    $openAiOutput
+    & $pythonExe -m compileall -q src
+    $compileallExit = $LASTEXITCODE
+    if ($compileallExit -ne 0) { throw "compileall failed with exit $compileallExit." }
+    & $pythonExe -m ruff format --check src tests
+    $ruffFormatExit = $LASTEXITCODE
+    if ($ruffFormatExit -ne 0) { throw "ruff format check failed with exit $ruffFormatExit." }
+    & $pythonExe -m ruff check src tests
+    $ruffCheckExit = $LASTEXITCODE
+    if ($ruffCheckExit -ne 0) { throw "ruff check failed with exit $ruffCheckExit." }
+    & $pythonExe -m mypy --strict src tests --exclude tests/typecheck_fixtures
+    $mypyExit = $LASTEXITCODE
+    if ($mypyExit -ne 0) { throw "normal mypy failed with exit $mypyExit." }
+    & $pythonExe -m pytest -q
+    $pytestExit = $LASTEXITCODE
+    if ($pytestExit -ne 0) { throw "all pytest failed with exit $pytestExit." }
+    & $pythonExe -m pytest tests/test_no_external_network.py -q
+    $networkExit = $LASTEXITCODE
+    if ($networkExit -ne 0) { throw "network-blocking test failed with exit $networkExit." }
+    & $pythonExe -m pytest tests/test_no_external_network.py --setup-plan -q
+    $networkSetupExit = $LASTEXITCODE
+    if ($networkSetupExit -ne 0) { throw "network setup-plan failed with exit $networkSetupExit." }
+    & $pythonExe tests/acceptance/entrypoint_lifecycle.py
+    $lifecycleExit = $LASTEXITCODE
+    if ($lifecycleExit -ne 0) { throw "entrypoint lifecycle failed with exit $lifecycleExit." }
+    $workersOutput = (& $pythonExe -m neontof.main --workers 2 2>&1 | Out-String)
+    $workersExit = $LASTEXITCODE
+    $workersOutput
+    if ($workersExit -ne 2 -or $workersOutput -notmatch 'NEONTOF_WORKERS must be 1') { throw "workers=2 expected exit 2 and exact message, got $workersExit." }
+    "install=$installExit; pip-check=$pipCheckExit; compileall=$compileallExit; ruff-format=$ruffFormatExit; ruff=$ruffCheckExit; mypy=$mypyExit; pytest=$pytestExit; network=$networkExit; network-setup=$networkSetupExit; lifecycle=$lifecycleExit; workers=2=$workersExit"
+} finally {
+    if ($openAiKeyWasPresent) { $env:OPENAI_API_KEY = $openAiKeyValue } else { Remove-Item -LiteralPath 'Env:OPENAI_API_KEY' -ErrorAction SilentlyContinue }
+    if ($anthropicKeyWasPresent) { $env:ANTHROPIC_API_KEY = $anthropicKeyValue } else { Remove-Item -LiteralPath 'Env:ANTHROPIC_API_KEY' -ErrorAction SilentlyContinue }
+    if ($pythonPathWasPresent) { $env:PYTHONPATH = $pythonPathValue } else { Remove-Item -LiteralPath 'Env:PYTHONPATH' -ErrorAction SilentlyContinue }
+    if ([System.IO.Directory]::Exists($freshRoot)) { [System.IO.Directory]::Delete($freshRoot, $true) }
+    "fresh gate cleanup=$([System.IO.Directory]::Exists($freshRoot))"
+}
+if ((Test-Path -LiteralPath 'Env:OPENAI_API_KEY') -ne $openAiKeyWasPresent) { throw "OPENAI_API_KEY presence was not restored." }
+if ($openAiKeyWasPresent -and $env:OPENAI_API_KEY -ne $openAiKeyValue) { throw "OPENAI_API_KEY value was not restored." }
+if ((Test-Path -LiteralPath 'Env:ANTHROPIC_API_KEY') -ne $anthropicKeyWasPresent) { throw "ANTHROPIC_API_KEY presence was not restored." }
+if ($anthropicKeyWasPresent -and $env:ANTHROPIC_API_KEY -ne $anthropicKeyValue) { throw "ANTHROPIC_API_KEY value was not restored." }
+if ((Test-Path -LiteralPath 'Env:PYTHONPATH') -ne $pythonPathWasPresent) { throw "PYTHONPATH presence was not restored." }
+if ($pythonPathWasPresent -and $env:PYTHONPATH -ne $pythonPathValue) { throw "PYTHONPATH value was not restored." }
+~~~
+
+API keyの元のpresence / valueは保存・復元するが、値は出力しない。network guard、lifecycle、
+workers probeはfresh Gateでも維持する。workers probeはstdout / stderrを捕捉し、exit exactly 2かつ
+`NEONTOF_WORKERS must be 1`を含むことを要求する。source scanは上の
+forbidden検索とrglob scanを最終Gateでも同じroot / python解決で再実行し、openai / forbidden
+API / sqlite connection / network / validation bypass / manifest外sourceを0件にする。
+P0-01bで確定した期待出力は`No broken requirements found.`、network test成功、
+`entrypoint_lifecycle=graceful_exit_0_rebind_health_200`、`workers=2 exit 2`であり、未確認の
+remote CIは成功と扱わずpendingにする。
+
+P0-03実測後、MyWorkflow正本
+`C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\agent-guide\build-and-verify.md`
+を別branch / 別commitで更新する。そこへactual commandを反映した後、MyWorkflow rootで
+次の絶対pathだけでapply、report、hash、mirrorを実行する。
+
+~~~powershell
+$myWorkflowRoot = 'C:\Users\KINGkawamura\Documents\MyWorkflow'
+$myWorkflowDeploy = 'C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs'
+$sourceNeontoFRoot = 'C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF'
+$deployedNeontoFRoot = 'C:\Users\KINGkawamura\Documents\NeontoF'
+if (-not (Test-Path -LiteralPath $myWorkflowRoot -PathType Container)) { throw 'MyWorkflow source root was not found.' }
+if (-not (Test-Path -LiteralPath $myWorkflowDeploy -PathType Leaf)) { throw 'MyWorkflow deploy script was not found.' }
+if (-not (Test-Path -LiteralPath $sourceNeontoFRoot -PathType Container)) { throw 'NeontoF source root was not found.' }
+if (-not (Test-Path -LiteralPath $deployedNeontoFRoot -PathType Container)) { throw 'NeontoF deployed root was not found.' }
+
+node C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs --apply NeontoF
+$applyExit = $LASTEXITCODE
+if ($applyExit -ne 0) { throw "MyWorkflow apply failed with exit $applyExit." }
+node C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs NeontoF
+$reportExit = $LASTEXITCODE
+if ($reportExit -ne 0) { throw "MyWorkflow deploy report failed with exit $reportExit." }
+
+$sourceAgents = 'C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\AGENTS.md'
+$sourceClaude = 'C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\CLAUDE.md'
+$deployedAgents = 'C:\Users\KINGkawamura\Documents\NeontoF\AGENTS.md'
+$deployedClaude = 'C:\Users\KINGkawamura\Documents\NeontoF\CLAUDE.md'
+foreach ($path in @($sourceAgents, $sourceClaude, $deployedAgents, $deployedClaude)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Mirror file was not found: $path" }
+}
+$sourceAgentsHash = (Get-FileHash -LiteralPath $sourceAgents -Algorithm SHA256).Hash
+$sourceAgentsHashExit = 0
+$sourceClaudeHash = (Get-FileHash -LiteralPath $sourceClaude -Algorithm SHA256).Hash
+$sourceClaudeHashExit = 0
+$deployedAgentsHash = (Get-FileHash -LiteralPath $deployedAgents -Algorithm SHA256).Hash
+$deployedAgentsHashExit = 0
+$deployedClaudeHash = (Get-FileHash -LiteralPath $deployedClaude -Algorithm SHA256).Hash
+$deployedClaudeHashExit = 0
+if ($sourceAgentsHash -ne $deployedAgentsHash -or $sourceClaudeHash -ne $deployedClaudeHash) { throw 'source/deployed AGENTS or CLAUDE hash mismatch.' }
+
+$sourceMirror = Compare-Object -ReferenceObject (Get-Content -LiteralPath $sourceAgents) -DifferenceObject (Get-Content -LiteralPath $sourceClaude)
+$sourceMirrorExit = if ($null -eq $sourceMirror) { 0 } else { 1 }
+if ($sourceMirrorExit -ne 0) { throw 'source AGENTS.md / CLAUDE.md mirror mismatch.' }
+$deployedMirror = Compare-Object -ReferenceObject (Get-Content -LiteralPath $deployedAgents) -DifferenceObject (Get-Content -LiteralPath $deployedClaude)
+$deployedMirrorExit = if ($null -eq $deployedMirror) { 0 } else { 1 }
+if ($deployedMirrorExit -ne 0) { throw 'deployed AGENTS.md / CLAUDE.md mirror mismatch.' }
+$sourceToDeployedAgents = Compare-Object -ReferenceObject (Get-Content -LiteralPath $sourceAgents) -DifferenceObject (Get-Content -LiteralPath $deployedAgents)
+$sourceToDeployedAgentsExit = if ($null -eq $sourceToDeployedAgents) { 0 } else { 1 }
+if ($sourceToDeployedAgentsExit -ne 0) { throw 'source/deployed AGENTS.md mismatch.' }
+$sourceToDeployedClaude = Compare-Object -ReferenceObject (Get-Content -LiteralPath $sourceClaude) -DifferenceObject (Get-Content -LiteralPath $deployedClaude)
+$sourceToDeployedClaudeExit = if ($null -eq $sourceToDeployedClaude) { 0 } else { 1 }
+if ($sourceToDeployedClaudeExit -ne 0) { throw 'source/deployed CLAUDE.md mismatch.' }
+"apply=$applyExit; report=$reportExit; source-agents-hash=$sourceAgentsHashExit; source-claude-hash=$sourceClaudeHashExit; deployed-agents-hash=$deployedAgentsHashExit; deployed-claude-hash=$deployedClaudeHashExit; source-mirror=$sourceMirrorExit; deployed-mirror=$deployedMirrorExit; source-to-deployed-agents=$sourceToDeployedAgentsExit; source-to-deployed-claude=$sourceToDeployedClaudeExit"
+~~~
+
+MyWorkflow source rootは`C:\Users\KINGkawamura\Documents\MyWorkflow`、scriptは
+`C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs`に固定し、cwdに依存する相対script指定、
+相対`AGENTS.md` / `CLAUDE.md`比較、`--dry-run`形式は使わない。
+この外部pathの更新・deploy・hash・mirror確認はNeontoFの変更pathやcommitへ含めない。
 
 ### 9.6 Commit boundary、Gate証拠、rollback
 
-1. test: EventからProjectionを再構築する契約を固定する
-2. feat: PythonのDomainとEvent最小契約を追加する
-3. docs: Core DomainとEventの仕様を確定する
+P0-03の実装は次の3 logical commitだけに分ける。各commitのscope外pathを混ぜない。
 
-Gate証拠はvalid / invalid fixture、ValidationIssue、Projection、turn status、sabotage、
-normal mypy 0、negative mypy expected exit 1、禁止API検索0件とする。リスクは高い。
-後続着手前なら3commitを逆順revertし、永続Eventがないためdata migrationは作らない。
+1. `test: Core Domain契約のREDを固定する`
+   - `tests/fixtures/events/minimal-session.v1.json`
+   - `tests/fixtures/events/invalid-unknown-field.v1.json`
+   - `tests/fixtures/events/invalid-unknown-version.v1.json`
+   - `tests/fixtures/events/invalid-unknown-event.v1.json`
+   - `tests/fixtures/events/invalid-payloads.v1.json`
+   - `tests/fixtures/events/turn-status-sequences.v1.json`
+   - `tests/fixtures/events/same-request-resend.v1.json`
+   - `tests/contracts/__init__.py`
+   - `tests/contracts/test_contract_model.py`
+   - `tests/contracts/test_domain.py`
+   - `tests/contracts/test_event_parser.py`
+   - `tests/contracts/test_turn_status.py`
+   - `tests/test_config.py`
+   - `tests/test_repository_contracts.py`
+   - `tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py`
+   これはtests/fixtures、contracts、config、manifest、negativeのREDだけを含む。
+2. `feat: Core DomainとProjectionの最小実装を追加する`
+   - `src/neontof/contracts/__init__.py`
+   - `src/neontof/contracts/base.py`
+   - `src/neontof/contracts/ids.py`
+   - `src/neontof/contracts/domain.py`
+   - `src/neontof/contracts/event_parser.py`
+   - `src/neontof/contracts/projection.py`
+   - `src/neontof/contracts/turn_status.py`
+   - `src/neontof/config.py`
+   - `src/neontof/app.py`
+   11-path production manifestのうちP0-03で新規・変更するproduction pathだけを含む。
+3. `docs: Core DomainとEvent仕様を確定する`
+   - `docs/specs/core-domain-and-events.md`だけを含む。
+
+この計画ファイルの更新は上のP0-03実装3 commitへ含めず、作業役の許可pathである
+`docs/plans/phase-00-foundation.md`の別の計画更新として扱う。MyWorkflow guideの更新も別repoの
+別branch / 別commitであり、上の3 commitへ含めない。
+
+P0-03 integrated diffの`check-scope`は、上の3 commitが全て着地し、レビュー済みdiffを統合した
+後に、オーケストレーターが全着地diffへ1回だけ実行する。各子commitで重複実行しない。
+
+Gate証拠は7 raw fixture、17 payload、DomainEventValidationIssue / DomainEventValidationErrorのredaction、Projection handwritten
+expected（最終sequence 27）、turn status、Fact ID vector、ContractModel sabotage、config/app
+identity、11-path rglob manifest、normal mypy 0、negative mypy exit 1 / `[arg-type]` 2 / 他error
+0、error lines exactly 2、fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent` fragment、
+required語、forbidden検索0件、P0-01b最終Gate再実行の実出力とする。リスクは高い。
+後続着手前ならこの3 commitを逆順revertし、永続Eventがないためdata migrationは作らない。
 
 ---
 
@@ -1620,8 +2483,9 @@ $env:PYTHONPATH = (Join-Path (Get-Location) "src")
 & $neontofPython -m pytest -q
 & $neontofPython -m mypy --strict src tests --exclude "tests/typecheck_fixtures"
 rg -n "sk-[A-Za-z0-9]{20,}|TOP_SECRET_SENTINEL" src/neontof tests/fixtures
-rg -n "^(from|import) openai|openai" src/neontof tests requirements.in requirements-dev.in requirements.lock.txt pyproject.toml
-rg -n "provider_registry\.py|ProviderRegistry|Capability|Plugin|Hook|Profile" src/neontof tests
+rg -ni "^(from|import) openai|openai" src/neontof
+rg -ni "provider_registry\.py|ProviderRegistry|Capability|Plugin|Hook|Profile" src/neontof
+rg -ni "anthropic|sqlite3\.connect|sqlite3\.Connection|provider_registry" src/neontof
 rg -n "socket\.(socket|create_connection|create_server|getaddrinfo)|http\.client|urllib\.(request|parse)|requests\.|httpx\.(Client|AsyncClient)|urlopen" src/neontof
 ~~~
 
@@ -1630,6 +2494,8 @@ raw request / contextなし、filter正常、src/neontofとtests/fixturesにsecr
 openai・registry等なし、source network pattern 0件、全pytest sessionのautouse network禁止PASS、
 API keyなし、network call 0である。Provider testはFake / Scripted / Recorded Fixtureだけで、
 OpenAI SDKはPhase 1候補のADR記録だけにする。
+このP0-07のproduction-only forbidden scanでもtestsのreject case語を許し、forbidden source patternの
+`rg`はexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとする。
 
 ### 13.6 Commit boundary、Gate証拠、rollback
 
@@ -1669,7 +2535,7 @@ claude -p "docs/plans/phase-00-foundation.mdと対象diffを突き合わせ、Ev
 | Stack承認 | docs/adr/0001-technology-stack.md | Accepted、承認引用、Bのexact version |
 | MyWorkflow guide boundary | `docs/neontof-phase-00-guides` branch、3 files、review / commit / deploy | architecture.md、coding-style.md、build-and-verify.mdだけ、MyWorkflow mainへ直接commitなし、pushなし、展開差分0。P0-01b実測後にbuild guideをactual commandへ別commit |
 | Runtime | py -3.14 version assert、.python-version | 3.14.3一致 |
-| Dependency install | fresh venv、lock install、pip check | exit 0、No broken requirements found. |
+| Dependency install | unique TEMP / fresh isolated venv、`pip install --require-hashes -r requirements.lock.txt`、pip check、openai absence | exit 0、No broken requirements found.、`openai absent`。既存repository `.venv`だけは証拠にしない |
 | Lock generation | TEMP tool venv、pip-tools==7.6.1、固定pip-compile | Python 3.14.3 version assert、`requirements-dev.in` input、`--generate-hashes`、明示output、`pip-tools (7.6.1)` |
 | Dependency root set | requirements.in / requirements-dev.in / requirements.lock.txt | runtime root setがfastapi/pydantic/uvicornだけ、dev root setがPyYAML/httpx/mypy/pytest/ruff/types-PyYAMLだけ、余分なrootはFAIL |
 | Dependency boundary | requirements.in / requirements-dev.in / requirements.lock.txt | runtime/dev分離、PyYAML 6.0.3はdev-only、openai 0件 |
@@ -1677,10 +2543,11 @@ claude -p "docs/plans/phase-00-foundation.mdと対象diffを突き合わせ、Ev
 | Format | python -m ruff format --check src tests | 差分なし、exit 0 |
 | Lint | python -m ruff check src tests | error 0 |
 | Type | python -m mypy --strict src tests --exclude tests/typecheck_fixtures | error 0、Pydantic plugin、warn_unused_ignores |
-| Negative type | negative fixture単独mypy | expected exit 1、arg-type/assert-type実出力 |
+| Negative type | negative fixture単独mypy | stdout / stderrを捕捉してexpected exit 1、error lines exactly 2、両方`[arg-type]`、other errors 0、fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent` fragment |
 | Test | python -m pytest -q | 全test passed、API keyなし |
 | Empty Application | 実entrypoint probe | HTTP 200、{"status":"ok"}、127.0.0.1 |
 | Process lifecycle | entrypoint probe | --workers 1、CTRL_BREAK_EVENT相当、graceful exit code 0、PID終了、2回目health 200 / JSON、rebind、stdout/stderr empty。bind failure / timeoutはFAIL |
+| Worker rejection probe | fresh gateの`python -m neontof.main --workers 2`、stdout / stderr capture | exit exactly 2、outputにexact message `NEONTOF_WORKERS must be 1` |
 | SQLite ownership | src検索、test | Phase 0のsqlite3.connect / Connection 0件、P1-01 owner契約 |
 | Contract model | test_contract_model.py | strict、forbid、frozen、immutable、mutation/revalidation PASS |
 | Event parser | parser testと禁止検索 | unknown field/version、ID、payload reject、bypass 0件 |
@@ -1698,30 +2565,59 @@ claude -p "docs/plans/phase-00-foundation.mdと対象diffを突き合わせ、Ev
 | Line ending | git diff --numstat / --ignore-cr-at-eol --numstat | 2つが一致 |
 | Generated output | git status --short --untracked-files=all | venv、cache、DB、secret、client、migrationsをcommitしない |
 
-Pydantic bypass検索はnegative fixtureを除外する。negative fixture内のerror-code付きignoreだけ
-は別証拠とする。
+Pydantic bypass検索はnegative fixtureを除外せず、`src/neontof`と通常`tests`の全体をscanする。
+negative fixtureの`# type: ignore`、`assert_type`、`cast(`は別々にscanし、各zero-hitのrg exit 1を
+要求する。
 
 ~~~powershell
-rg -n "model_construct\(|\bcast\(|# type: ignore" src/neontof tests --glob "!tests/typecheck_fixtures/**"
-rg -n "# type: ignore\[arg-type\]|assert_type" tests/typecheck_fixtures
+$bypassPatterns = @('setState', 'updateState', 'mutateState', 'saveProjection', 'model_construct\(', 'cast\(')
+foreach ($pattern in $bypassPatterns) {
+    & rg -n -- $pattern src/neontof tests
+    $bypassExit = $LASTEXITCODE
+    if ($bypassExit -eq 1) { continue }
+    if ($bypassExit -eq 0) { throw "validation bypass hit for '$pattern'." }
+    throw "validation bypass search tool failure for '$pattern' with exit $bypassExit."
+}
+$negativeFixture = 'tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py'
+foreach ($pattern in @('# type: ignore', 'assert_type', 'cast\(')) {
+    & rg -n -- $pattern $negativeFixture
+    $negativeFixtureExit = $LASTEXITCODE
+    if ($negativeFixtureExit -eq 0) { throw "negative fixture bypass hit for '$pattern'." }
+    if ($negativeFixtureExit -ne 1) { throw "negative fixture bypass search failed for '$pattern' with exit $negativeFixtureExit." }
+}
 ~~~
 
 OpenAI混入検索はADRを対象から外す。ADRにはPhase 1候補を記録するためである。
 
 ~~~powershell
 $requirementsTxt = @(Get-ChildItem -LiteralPath . -File -Filter "requirements*.txt" | Select-Object -ExpandProperty FullName)
-$openAiHits = @(rg -n "openai|^(from|import) openai" ($requirementsTxt + @("pyproject.toml", "src", "tests")) 2>$null)
-if ($LASTEXITCODE -eq 0) { $openAiHits; throw "OpenAI content is forbidden in Phase 0" }
-$forbiddenApiHits = @(rg -n "\b(Plugin|Hook|Profile|ProviderRegistry)\b|provider_registry" src tests 2>$null)
-if ($LASTEXITCODE -eq 0) { $forbiddenApiHits; throw "Plugin/Hook/Profile/ProviderRegistry content is forbidden" }
-$sqliteHits = @(rg -n "sqlite3\.connect|sqlite3\.Connection" src 2>$null)
-if ($LASTEXITCODE -eq 0) { $sqliteHits; throw "Phase 0 must have zero sqlite3 connection source hits" }
+$openAiHits = @(rg -ni "openai|^(from|import) openai" ($requirementsTxt + @("pyproject.toml")) 2>$null)
+$openAiExit = $LASTEXITCODE
+if ($openAiExit -eq 0) { $openAiHits; throw "OpenAI content is forbidden in Phase 0" }
+if ($openAiExit -ne 1) { throw "OpenAI search tool failure with exit $openAiExit." }
+foreach ($pattern in @('TurnStarted', 'EmptyPayload', 'reference_projection', 'Plugin', 'Hook', 'Profile', 'ProviderRegistry')) {
+    $productionForbiddenHits = @(rg -n -- $pattern src/neontof 2>$null)
+    $productionForbiddenExit = $LASTEXITCODE
+    if ($productionForbiddenExit -eq 0) { $productionForbiddenHits; throw "Production forbidden content found: $pattern" }
+    if ($productionForbiddenExit -ne 1) { throw "Production forbidden search failed for $pattern with exit $productionForbiddenExit." }
+}
+foreach ($pattern in @('openai', 'anthropic', 'sqlite3\.connect', 'sqlite3\.Connection', 'provider_registry')) {
+    $sourceOnlyHits = @(rg -ni -- $pattern src/neontof 2>$null)
+    $sourceOnlyExit = $LASTEXITCODE
+    if ($sourceOnlyExit -eq 0) { $sourceOnlyHits; throw "Source-only forbidden content found: $pattern" }
+    if ($sourceOnlyExit -ne 1) { throw "Source-only search failed for $pattern with exit $sourceOnlyExit." }
+}
 $networkHits = @(rg -n "socket\.(socket|create_connection|create_server|getaddrinfo)|http\.client|urllib\.(request|parse)|requests\.|httpx\.(Client|AsyncClient)|urlopen" src 2>$null)
-if ($LASTEXITCODE -eq 0) { $networkHits; throw "External socket/API source usage is forbidden" }
+$networkExit = $LASTEXITCODE
+if ($networkExit -eq 0) { $networkHits; throw "External socket/API source usage is forbidden" }
+if ($networkExit -ne 1) { throw "External network search tool failure with exit $networkExit." }
 Write-Output "openai_import_network_plugin_sqlite_source=0"
 ~~~
 
 内容検索は補助証拠であり、禁止pathの存在検査とallowed root manifestの集合差分を代替しない。
+production-only forbidden語は`src/neontof`だけを対象にし、testsのreject case語を許す。source-only
+patternは`openai`、`anthropic`、`sqlite3.connect`、`sqlite3.Connection`、`provider_registry`とし、
+全ての`rg`はexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとして扱う。
 
 ~~~powershell
 $repoRoot = (Get-Location).Path
@@ -1775,45 +2671,23 @@ Write-Output "forbidden_paths=0; allowed_root_manifest_diff=0"
 ### Phase 0 final verification
 
 ~~~powershell
-# First run the fixed TEMP pip-tools / pip-compile block in §8.5 without changing its
-# Python 3.14.3, requirements-dev.in input, requirements.lock.txt output, or --generate-hashes.
-py -3.14 --version
-py -3.14 -c "import sys; assert sys.version_info[:3] == (3, 14, 3); print(sys.version)"
-py -3.14 -m venv .venv
-$neontofPython = (Resolve-Path -LiteralPath ".venv/Scripts/python.exe").Path
-& $neontofPython -c "import sys; assert sys.version_info[:3] == (3, 14, 3); print(sys.version)"
-& $neontofPython -m pip install --require-hashes -r requirements.lock.txt
-& $neontofPython -m pip check
-$env:PYTHONPATH = (Join-Path (Get-Location) "src")
-Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
-& $neontofPython -m compileall -q src
-& $neontofPython -m ruff format --check src tests
-& $neontofPython -m ruff check src tests
-& $neontofPython -m mypy --strict src tests --exclude "tests/typecheck_fixtures"
-& $neontofPython -m pytest -q
-& $neontofPython -m mypy --strict tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py
-& $neontofPython -c "import sys; assert sys.version_info[:3] == (3, 14, 3)"
-$requirementsTxt = @(Get-ChildItem -LiteralPath . -File -Filter "requirements*.txt" | Select-Object -ExpandProperty FullName)
-$openAiHits = @(rg -n "openai|^(from|import) openai" ($requirementsTxt + @("pyproject.toml", "src", "tests")) 2>$null)
-if ($openAiHits.Count -gt 0) { throw "OpenAI content found" }
-$forbiddenApiHits = @(rg -n "\b(Plugin|Hook|Profile|ProviderRegistry)\b|provider_registry" src tests 2>$null)
-if ($forbiddenApiHits.Count -gt 0) { throw "Forbidden extension content found" }
-$sqliteHits = @(rg -n "sqlite3\.connect|sqlite3\.Connection" src 2>$null)
-if ($sqliteHits.Count -gt 0) { throw "sqlite3 connection source found" }
-$networkHits = @(rg -n "socket\.(socket|create_connection|create_server|getaddrinfo)|http\.client|urllib\.(request|parse)|requests\.|httpx\.(Client|AsyncClient)|urlopen" src 2>$null)
-if ($networkHits.Count -gt 0) { throw "External network source found" }
-rg -n "model_construct\(|\bcast\(|# type: ignore" src/neontof tests --glob "!tests/typecheck_fixtures/**"
-# Run the Test-Path / Get-ChildItem forbidden-path and allowed-root-manifest block from §15.
-# Run the §8.5 graceful entrypoint probe: CTRL_BREAK_EVENT, exit code 0, second health 200 / JSON,
-# port rebind, and empty stdout/stderr; bind failure or timeout is FAIL.
+# P0-01b final Gate is the canonical block in §9.5 above. Execute that block verbatim;
+# do not substitute the existing repository .venv. It creates a unique TEMP/fresh isolated
+# venv, reruns the fixed TEMP pip-tools / pip-compile block, and saves every native exit code.
+# Its fixed inputs remain Python 3.14.3, requirements-dev.in, requirements.lock.txt,
+# --generate-hashes, and pip install --require-hashes. It includes pip check, compileall,
+# ruff format/check, normal mypy, pytest, openai absence, API-key restore, network guard,
+# lifecycle, workers=2 output probe, cleanup, and remote CI pending.
+# Then execute the P0-03 parser / projection / negative-mypy / forbidden / rglob blocks above.
 git diff --check
 git diff --numstat
 git diff --ignore-cr-at-eol --numstat
 git status --short --untracked-files=all
 ~~~
 
-negative mypyだけはexpected exit 1なので通常qualityのexit 0とは別の証拠欄へ記録する。
+P0-01b final Gateはrepository `.venv` installだけを証拠にしない。negative mypyだけはexpected exit 1なので
+通常qualityのexit 0とは別の証拠欄へ記録し、stdout / stderr、error lines exactly 2、両方`[arg-type]`、
+other errors 0、fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent` fragmentを残す。
 `pip-tools (7.6.1)`、direct root set集合一致、禁止path存在0件、manifest外changed path 0件、
 sqlite3 connection source 0件、全pytest sessionのnetwork call 0を同じGate証拠へ記録する。
 Phase完了報告にはentrypointのHTTP status / JSON、shutdown / PID / rebind、stdout / stderr、
