@@ -172,8 +172,8 @@ docs/agent-guide/build-and-verify.md、docs/agent-guide/coding-style.mdである
 8. Event appendは将来の単一transaction境界で行う。Transcript / Telemetryはその外へappendし、
    失敗Turnの記録と消費済み費用を消さない。
 9. UndoはEvent削除ではなくTurnReverted appendで表現する。
-10. Dice SeedはH(campaign_seed, turn_id, action_id, roll_index)から導出する。Phase 0は式と
-    Contract Fixtureを固定し、Dice Runtimeは作らない。
+10. Dice Seedは固定したbyte列をSHA-256へ渡すH(campaign_seed, turn_id, action_id, roll_index)から
+    導出する。Phase 0は式とContract Fixtureを固定し、Dice Runtimeは作らない。
 11. 実Providerなし・API keyなしで必須testを実行する。
 12. P0-07のModelInvokerは一つのCallable境界に限定し、二つ目の具体実装がないProvider
     hierarchy、registry、capabilityを作らない。
@@ -625,23 +625,21 @@ warn_untyped_fields = true
 使う。negative fixtureは通常qualityから除外し、python -m mypy --strict
 tests/typecheck_fixtures/transcript_telemetry_into_domain_event.pyを別に実行する。この
 別commandはstdout / stderrを捕捉してexpected exit 1、error line exactly 2、両方`[arg-type]`、
-その他のerror 0件を確認し、fixture filename、`TranscriptEntry`、`TelemetryEntry`、`DomainEvent`の
+その他のerror 0件を確認し、fixture filename、`rebuild_projection`、`TranscriptEntry`、`TelemetryEntry`の
 各fragmentも出力に含める。任意の`[arg-type]` 2件だけを成功扱いにしない。
 
-negative fixtureは次のように、productionの実型`DomainEvent`、`TranscriptEntry`、`TelemetryEntry`を
-importするtyped sinkへTranscript / Telemetryを渡す型境界を明示する。`# type: ignore`、
-`assert_type`、`cast(`はfixtureにも他のsource / testsにも置かない。
+negative fixtureは次のように、productionの実型`TranscriptEntry`、`TelemetryEntry`と、productionの
+`rebuild_projection`をimportし、Transcript / Telemetryを直接渡すtyped sinkで型境界を明示する。
+`# type: ignore`、`assert_type`、`cast(`はfixtureにも他の
+source / testsにも置かない。
 
 ~~~python
-from neontof.contracts.domain import DomainEvent, TelemetryEntry, TranscriptEntry
+from neontof.contracts.domain import TelemetryEntry, TranscriptEntry
 from neontof.contracts.projection import rebuild_projection
 
-def project_domain_event(event: DomainEvent) -> None:
-    rebuild_projection((event,))
-
 def typed_sink(transcript_entry: TranscriptEntry, telemetry_entry: TelemetryEntry) -> None:
-    project_domain_event(transcript_entry)
-    project_domain_event(telemetry_entry)
+    rebuild_projection((transcript_entry,))
+    rebuild_projection((telemetry_entry,))
 ~~~
 
 ### 8.3 型とSignature
@@ -805,14 +803,14 @@ $argTypeLines = @($errorLines | Where-Object { $_ -match '\[arg-type\]' })
 $otherErrorLines = @($errorLines | Where-Object { $_ -notmatch '\[arg-type\]' })
 if ($negativeExit -ne 1) { throw "negative mypy expected exit 1, got $negativeExit." }
 if ($errorLines.Count -ne 2 -or $argTypeLines.Count -ne 2 -or $otherErrorLines.Count -ne 0) { throw "negative mypy error surface mismatch." }
-foreach ($fragment in @('tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py', 'TranscriptEntry', 'TelemetryEntry', 'DomainEvent')) {
+foreach ($fragment in @('tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py', 'rebuild_projection', 'TranscriptEntry', 'TelemetryEntry')) {
   if ($negativeOutput -notmatch [regex]::Escape($fragment)) { throw "negative mypy output lacks fragment: $fragment" }
 }
 "negative mypy exit $negativeExit; errors=$($errorLines.Count); arg-type=$($argTypeLines.Count); other-errors=$($otherErrorLines.Count)"
 ~~~
 
 期待結果はstdout / stderrを捕捉したexit 1、error lines exactly 2、両方`[arg-type]`、other errors 0、
-fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent`の各fragmentありである。通常qualityは
+fixture filename / `rebuild_projection` / `TranscriptEntry` / `TelemetryEntry`の各fragmentありである。通常qualityは
 negative fixtureを除外してexit 0、負例単独は型境界が壊れた場合にexit 1となる。
 
 実entrypoint probeはRepository外のtemporary outputへredirectする。`PYTHONPATH=src`を一貫して
@@ -1149,9 +1147,25 @@ ModelCallIdもkind:slug grammarで個別に定義する。Event typeは次の17�
 
 `EmptyPayload`は作らない。raw input、LLM Narrative、Transcript、Telemetry、API key、prompt、
 secretはどのpayloadにも入れない。`DiceRolled`は上表の6 fieldをstrictに持ち、extra fieldを受理しない。
-`seed = H(campaign_seed, turn_id, action_id, roll_index)`を導出して`derived_seed`へ記録し、
-fixtureではcampaign seed、envelopeのturn ID、action ID、roll index、derived seed、formula、resultの
-全てを検証する。API keyとraw narrativeはfixtureにもログにも入れない。
+Dice Seedの再現可能な`H`は次のbyte列をSHA-256へ渡したlowercase hex digestとする。
+
+~~~text
+H(campaign_seed, turn_id, action_id, roll_index) =
+  sha256(
+    b"neontof:dice-seed:v1\0" +
+    campaign_seed.encode("ascii") + b"\0" +
+    turn_id.encode("ascii") + b"\0" +
+    action_id.encode("ascii") + b"\0" +
+    decimal_ascii(roll_index)
+  ).hexdigest()
+~~~
+
+`neontof:dice-seed:v1`はdomain separator、各`b"\0"`はfield delimiterであり、全てASCIIで
+encodeする。`roll_index`は0以上のstrict intを符号なし10進ASCIIへ変換し、JSON、Unicode、
+locale、時刻、global randomは使わない。`derived_seed`へ記録し、fixtureではcampaign seed、
+envelopeのturn ID、action ID、roll index、derived seed、formula、resultの全てを検証する。Phase 0の
+minimal fixtureは`derived_seed="b80e804f6f362eb3c4735e474929ef29d1baca3965e6a67e52b90a4ae58e86b8"`
+を使う。API keyとraw narrativeはfixtureにもログにも入れない。
 `session_end_reason`はSessionEnded専用であり、SceneEnded / SceneStartedが管理する
 `scene_end_reason`と混同しない。
 
@@ -1331,33 +1345,48 @@ sequenceはCampaign内で厳密な1開始連番、`event_id`はunique、`occurre
 
 - [ ] `ContractModel`のstrict、extra forbid、frozen、`revalidate_instances="always"`、
   tuple / frozenset、finite float、bool/int分離、alias切断、nested mutation、revalidation
-  sabotageを先に書く。`tests/test_config.py`でcanonical baseとのidentityも固定する。
+  sabotageを先に書く。`Projection` / `FactRecord`のexact `model_fields`、公開collectionの
+  tuple / frozenset、定義元`projection.py`、nested mutation拒否も固定し、
+  `tests/test_config.py`でcanonical baseとのidentityも固定する。
 - [ ] 7つのraw fixtureを全てproduction `parse_domain_event_sequence`へ渡し、decoded Mappingを
   直接渡す経路を作らない。unknown field / version / event、payload不正、sequence欠落、
   duplicate `event_id`、ID grammar違反、same-request duplicate、wrong origin、存在しない日時・
-  offset・fraction・lowercase `z`の`occurred_at`をfixtureごとに検証し、wrong Python typeはraw reprを
-  含まない固定`TypeError`だけを返すことを検証する。
+  offset・fraction・lowercase `z`の`occurred_at`を検証する。複合invalid fixtureだけに依存せず、
+  各不正をraw JSON変形のparameterized caseとして単独でproduction parserへ渡し、期待するissue
+  codeとpath / fieldを確認する。wrong Python typeはraw reprを含まない固定`TypeError`だけを返す。
 - [ ] 17 Event typeのpayloadを最低1件ずつ、field type、strict int、nullable、effectまで検証し、
   unknown top-level / payload fieldと`TurnStarted` / `EmptyPayload`をrejectする。
 - [ ] minimal fixtureのseq 6 `DiceRolled`で`campaign_seed`、envelopeの`turn_id`、`action_id`、
-  `roll_index`、`derived_seed`、`formula`、`result`を全て固定し、`seed = H(campaign_seed, turn_id,
-  action_id, roll_index)`の導出値とresultを同時に検証する。API keyとraw narrativeはfixtureにない。
+  `roll_index`、`derived_seed`、`formula`、`result`を全て固定し、§9.3のdomain separator、NUL
+  delimiter、ASCII encoding、decimal roll indexを含む`H`の導出値とresultを同時に検証する。
+  campaign seed / turn ID / action ID / roll indexを一つずつ変える4 independent vectorも固定し、
+  常に定数を返す実装を通さない。API keyとraw narrativeはfixtureにない。
 - [ ] raw fixture → production parser → production `rebuild_projection`の順だけを使う。
   `tests/contracts/support/reference_projection.py`、reference reducer、期待値生成helperは作らない。
 - [ ] 同一Event列の2回rebuildがdeep equal、sequence 1開始・欠落なし、`occurred_at`非sort、
   Fact ID vector、TurnRevertedの先行committed target / 一回性のfail-closed検証と監査Event保持、
   turn status、same-request、別turn Eventの無視、null context Eventの無視、対象Eventなしのpending、
-  再起動後`awaiting_player`をtestする。
+  再起動後`awaiting_player`をtestする。`rebuild_projection`と`project_turn_status`へtyped
+  `model_copy` sabotageを渡し、sequence gap、duplicate `event_id`、campaign mismatch、wire /
+  context mismatchをfilter前にrejectする。同一requestの重複`PlayerInputAccepted`は
+  `same-request-resend.v1.json`の`event:r01`〜`event:r05` prefixだけでrejectし、committed後の
+  `TurnResumed` rejectとは別caseにする。
 - [ ] `tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py`はproductionから実型
-  `DomainEvent`、`TranscriptEntry`、`TelemetryEntry`をimportするtyped sinkへTranscript / Telemetryを
-  渡す。`# type: ignore`、`assert_type`、`cast(`を置かず、negative mypyはちょうど2件の`[arg-type]`、
+  `TranscriptEntry`、`TelemetryEntry`をimportし、productionの`rebuild_projection`へTranscript /
+  Telemetryを直接渡す。`# type: ignore`、`assert_type`、
+  `cast(`を置かず、negative mypyはちょうど2件の`[arg-type]`、
   それ以外のerror 0件、exit 1を記録する。
 - [ ] secret redaction testで、raw input / URL / ctx / repr / cause / context / API key sentinelが
   `DomainEventValidationIssue`、`DomainEventValidationError`の`str` / `repr` / `args` / `__dict__` /
   `__cause__` / `__context__` / `.issues`、通常log、fixture、payloadへ残らないことを確認する。
+  malformed JSONだけでなく、valid JSONのschema / payload validation errorにもsecret、API key、
+  URL sentinelを入れて全surfaceを確認し、7 fixture全てをsecret / narrative / transcript /
+  telemetry / raw_input / API key語でscanする。
 - [ ] `tests/test_config.py`のconfig/app regression、`tests/test_repository_contracts.py`の
-  11-path production manifestと`rglob`集合差分、P0-01bで作成済みApplicationのhealth regression
-  を同じP0-03変更で壊さない。
+  11-path production manifestと`rglob`集合差分、`contracts/projection.py`内の`FactRecord` /
+  `Projection` class定義各1件と他production pathでの定義0件、ProviderRegistry /
+  provider_registryだけを対象にした禁止scan、P0-01bで作成済みApplicationのhealth regressionを
+  同じP0-03変更で壊さない。
 
 `minimal-session.v1.json`はEvent `event:e01`〜`event:e27`をsequence 1〜27へ一つずつ持つ。
 type列は次の固定順であり、別の最終sequenceや期待値へ変更しない。
@@ -1420,7 +1449,7 @@ Projection(
     clocks=(ClockState(clock_id='clock:session', value=2),),
     facts=(
         FactRecord(
-            fact_id='fact:27cd642ddc52f1783e19c77e74c0f38a6bcf4ed9e8f200232704938d155b34d:0',
+            fact_id='fact:27cd642ddc52f1783e19c77e74c0f38a6bcf4ed9e8f200232704938d155b34d0:0',
             event_id='event:e10',
             kind='fact',
             holder='world',
@@ -1445,7 +1474,7 @@ Projection(
 ~~~
 
 最終ProjectionのFactはturn:oneの`event:e10 / 0`から導出した
-`fact:27cd642ddc52f1783e19c77e74c0f38a6bcf4ed9e8f200232704938d155b34d:0`だけで、statusは
+`fact:27cd642ddc52f1783e19c77e74c0f38a6bcf4ed9e8f200232704938d155b34d0:0`だけで、statusは
 `superseded`である。turn:twoの`event:e19 / 0`から導出した
 `fact:eb2fd634b619f44a9e029abaff4b66d4bf82f699f6ebb6fd5b988cfaa0c6700e:0`はrevertにより不在である。
 期待値はfixtureから自動生成せず、testへ手書きする。
@@ -1474,10 +1503,13 @@ if ($focusedRedExit -ne 1) { throw "focused RED expected exit 1, got $focusedRed
 foreach ($fragment in @('SyntaxError', 'FileNotFoundError', 'No such file', 'INTERNALERROR', 'collection error', 'collected 0', 'file or directory not found')) {
     if ($focusedOutput -match [regex]::Escape($fragment)) { throw "focused RED contains forbidden failure fragment: $fragment" }
 }
-$allowedRedExceptionPattern = '(?i)(ModuleNotFoundError|ImportError).*(neontof\.contracts|ContractModel|DomainEvent|Projection|parse_domain_event|project_turn_status)'
-$redExceptionLines = @($focusedOutput -split "`r?`n" | Where-Object { $_ -match '(?i)([A-Za-z]+Error|ImportError)' })
+$allowedRedExceptionPattern = '(?i)^\s*E\s+(?:ModuleNotFoundError|ImportError):.*neontof\.contracts'
+$redExceptionLines = @(
+    $focusedOutput -split "`r?`n" |
+        Where-Object { $_ -match '(?i)^\s*E\s+(?:[A-Za-z_][A-Za-z0-9_]*Error):' }
+)
 if ($redExceptionLines.Count -eq 0 -or ($redExceptionLines | Where-Object { $_ -notmatch $allowedRedExceptionPattern }).Count -ne 0) {
-    throw "focused RED was not limited to an expected contracts module/export absence."
+    throw "focused RED included a non-contract Python exception or a non-contract module/export absence."
 }
 "focused RED exit $focusedRedExit"
 ~~~
@@ -1562,14 +1594,14 @@ $argTypeLines = @($errorLines | Where-Object { $_ -match '\[arg-type\]' })
 $otherErrorLines = @($errorLines | Where-Object { $_ -notmatch '\[arg-type\]' })
 if ($negativeExit -ne 1) { throw "negative mypy expected exit 1, got $negativeExit." }
 if ($errorLines.Count -ne 2 -or $argTypeLines.Count -ne 2 -or $otherErrorLines.Count -ne 0) { throw "negative mypy error surface mismatch." }
-foreach ($fragment in @($negativeFixture, 'TranscriptEntry', 'TelemetryEntry', 'DomainEvent')) {
+foreach ($fragment in @($negativeFixture, 'rebuild_projection', 'TranscriptEntry', 'TelemetryEntry')) {
     if ($negativeOutput -notmatch [regex]::Escape($fragment)) { throw "negative mypy output lacks fragment: $fragment" }
 }
 "negative mypy exit $negativeExit; arg-type=$($argTypeLines.Count); other-errors=$($otherErrorLines.Count)"
 ~~~
 
 expected outputはstdout / stderrを捕捉したexit 1、error lines exactly 2、両方`[arg-type]`、
-その他error 0、fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent`の各fragmentあり
+その他error 0、fixture filename / `rebuild_projection` / `TranscriptEntry` / `TelemetryEntry`の各fragmentあり
 である。fixtureには`# type: ignore`、`assert_type`、`cast(`を置かない。
 
 #### required語検索とforbidden検索
@@ -1884,7 +1916,7 @@ P0-03 integrated diffの`check-scope`は、上の3 commitが全て着地し、�
 Gate証拠は7 raw fixture、17 payload、DomainEventValidationIssue / DomainEventValidationErrorのredaction、Projection handwritten
 expected（最終sequence 27）、turn status、Fact ID vector、ContractModel sabotage、config/app
 identity、11-path rglob manifest、normal mypy 0、negative mypy exit 1 / `[arg-type]` 2 / 他error
-0、error lines exactly 2、fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent` fragment、
+0、error lines exactly 2、fixture filename / `rebuild_projection` / `TranscriptEntry` / `TelemetryEntry` fragment、
 required語、forbidden検索0件、P0-01b最終Gate再実行の実出力とする。リスクは高い。
 後続着手前ならこの3 commitを逆順revertし、永続Eventがないためdata migrationは作らない。
 
@@ -2543,7 +2575,7 @@ claude -p "docs/plans/phase-00-foundation.mdと対象diffを突き合わせ、Ev
 | Format | python -m ruff format --check src tests | 差分なし、exit 0 |
 | Lint | python -m ruff check src tests | error 0 |
 | Type | python -m mypy --strict src tests --exclude tests/typecheck_fixtures | error 0、Pydantic plugin、warn_unused_ignores |
-| Negative type | negative fixture単独mypy | stdout / stderrを捕捉してexpected exit 1、error lines exactly 2、両方`[arg-type]`、other errors 0、fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent` fragment |
+| Negative type | negative fixture単独mypy | stdout / stderrを捕捉してexpected exit 1、error lines exactly 2、両方`[arg-type]`、other errors 0、fixture filename / `rebuild_projection` / `TranscriptEntry` / `TelemetryEntry` fragment |
 | Test | python -m pytest -q | 全test passed、API keyなし |
 | Empty Application | 実entrypoint probe | HTTP 200、{"status":"ok"}、127.0.0.1 |
 | Process lifecycle | entrypoint probe | --workers 1、CTRL_BREAK_EVENT相当、graceful exit code 0、PID終了、2回目health 200 / JSON、rebind、stdout/stderr empty。bind failure / timeoutはFAIL |
@@ -2687,7 +2719,7 @@ git status --short --untracked-files=all
 
 P0-01b final Gateはrepository `.venv` installだけを証拠にしない。negative mypyだけはexpected exit 1なので
 通常qualityのexit 0とは別の証拠欄へ記録し、stdout / stderr、error lines exactly 2、両方`[arg-type]`、
-other errors 0、fixture filename / `TranscriptEntry` / `TelemetryEntry` / `DomainEvent` fragmentを残す。
+other errors 0、fixture filename / `rebuild_projection` / `TranscriptEntry` / `TelemetryEntry` fragmentを残す。
 `pip-tools (7.6.1)`、direct root set集合一致、禁止path存在0件、manifest外changed path 0件、
 sqlite3 connection source 0件、全pytest sessionのnetwork call 0を同じGate証拠へ記録する。
 Phase完了報告にはentrypointのHTTP status / JSON、shutdown / PID / rebind、stdout / stderr、
