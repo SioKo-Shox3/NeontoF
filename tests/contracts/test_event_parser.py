@@ -165,32 +165,53 @@ def test_unknown_fields_version_and_event_are_sanitized_validation_errors() -> N
         assert raised.value.__context__ is None
 
 
-@pytest.mark.parametrize("unknown_location", ("top_level", "payload"))
+@pytest.mark.parametrize(
+    ("unknown_location", "unknown_field", "expected_path"),
+    [
+        pytest.param(
+            "top_level",
+            "UNKNOWN_FIELD_NAME_SECRET_TOP_LEVEL",
+            "field",
+            id="top-level-secret",
+        ),
+        pytest.param(
+            "payload",
+            "UNKNOWN_FIELD_NAME_SECRET_PAYLOAD",
+            "payload.field",
+            id="payload-secret",
+        ),
+        pytest.param("top_level", "name", "field", id="top-level-known-name-collision"),
+        pytest.param("payload", "event_id", "payload.field", id="payload-known-id-collision"),
+    ],
+)
 def test_unknown_field_name_secret_is_redacted_from_validation_surfaces(
     unknown_location: str,
+    unknown_field: str,
+    expected_path: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     from neontof.contracts.event_parser import DomainEventValidationError, parse_domain_event
 
-    sentinel = f"UNKNOWN_FIELD_NAME_SECRET_{unknown_location.upper()}"
     event = _minimal_event()
     caplog.set_level(logging.ERROR)
     if unknown_location == "top_level":
-        event[sentinel] = "rejected"
+        event[unknown_field] = "rejected"
     else:
         payload = event["payload"]
         assert isinstance(payload, dict)
-        payload[sentinel] = "rejected"
+        payload[unknown_field] = "rejected"
 
     with pytest.raises(DomainEventValidationError) as raised:
         parse_domain_event(json.dumps(event).encode("utf-8"))
 
     error = raised.value
-    assert any(issue.code == "unknown_field" for issue in error.issues)
-    assert all(sentinel not in issue.path for issue in error.issues)
-    _assert_redacted(error, sentinel)
+    assert any(
+        issue.code == "unknown_field" and issue.path == expected_path for issue in error.issues
+    )
+    assert all(unknown_field not in issue.path for issue in error.issues)
+    _assert_redacted(error, unknown_field)
     logging.getLogger("neontof.contracts").error("validation failed: %s", error)
-    assert sentinel not in caplog.text
+    assert unknown_field not in caplog.text
 
 
 def test_invalid_payload_fixture_covers_wire_and_sequence_failures() -> None:
