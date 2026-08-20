@@ -1250,7 +1250,11 @@ Pydantic errorはcatch中に`errors(include_input=False, include_url=False, incl
 sanitized issueへ抽出し、catchを抜けてから`DomainEventValidationError(issues) from None`としてraiseする。
 元errorをcause / contextへ保持しない。sentinel testは入力、`str`、`repr`、`args`、`__dict__`、
 `__cause__`、`__context__`、`.issues`、通常log、fixtureの全観測面にraw input、`input_value`、URL、
-ctx、secret sentinelが残らないことと、このraise規則を確認する。
+ctx、secret sentinelが残らないことと、このraise規則を確認する。このP0-03が契約する公開Error / issue /
+通常log / fixtureのredaction surfaceは、ここで列挙した面に限定する。`__traceback__`やcaller frame
+localsのscrubは保証しないため、caller側でraw inputを保持・ログしない運用責務を負う。
+`DomainEventValidationError`自身のcustom dataはsanitizedとし、raw input、cause、context、secretを
+保持しない。
 
 #### Projection concrete fields
 
@@ -1303,11 +1307,14 @@ class Projection(ContractModel):
 ~~~
 
 `rebuild_projection`はglobalな単一campaignの全canonical Event列を、sequence、event ID、wire invariant
-を先に検証する。各`TurnReverted`について、payloadのtargetがそのEventより前に一度だけ
-`TurnCommitted`されたTurnであり、同一targetへの`TurnReverted`も一度だけであることをfail-closedに
-検証する。検証に失敗したらProjectionを返さない。その後、対象Turnのstate / fact effectを適用せず、
-`TurnReverted`自身を含む全監査Eventを`audit_event_ids`へ残す。input Eventを削除・sort・
-`occurred_at`順へ並べ替えない。
+を先に検証する。各`TurnReverted`の時点で、そのEventより前に存在する直近の`TurnCommitted`の`turn_id`が
+payloadのtargetであり、targetがその時点までにちょうど1回commit済み、同一targetを既にrevertしていないこと
+だけをfail-closedに検証する。これはProduct Planの直前Turn semanticsを維持する条件である。prior commitなし、
+直近commitとのtarget不一致、targetのその時点までのcommitが0回または2回以上、同一targetの既存revertはrejectする。
+revert後の同じTurnの再commitなど全campaign lifecycleは`rebuild_projection`の責務外であり、対象Turnのlifecycle
+terminal / 後続遷移は`project_turn_status`側の責務とする。検証に失敗したらProjectionを返さない。その後、
+対象Turnのstate / fact effectを適用せず、`TurnReverted`自身を含む全監査Eventを`audit_event_ids`へ残す。
+input Eventを削除・sort・`occurred_at`順へ並べ替えない。
 
 #### Turn status遷移
 
@@ -1334,8 +1341,12 @@ request IDを要求する。同じturn requestの遷移は次だけを許可す�
 
 terminal後の対象Event、対象Turnのrequest ID mismatch、二重`PlayerInputAccepted`、未許可遷移は
 rejectする。別turnの正当なEventのrequest ID mismatchは無視する。`TurnReverted`はpayloadのtargetが
-対象ならstatusを変えず、`Projection.reverted_turn_ids`で表示する。P0で許可するrevertはcanonicalな
-committed Turnへの一回の`origin='table_correction'`だけで、任意revertはNon-goalである。
+対象ならstatusを変えず、`Projection.reverted_turn_ids`で表示する。P0で許可するrevertは、各Eventの時点で
+そのEventより前に存在する直前のcommitted Turn（直近の`TurnCommitted`）がpayload targetであり、targetが
+その時点までにちょうど1回commit済み、同一targetを既にrevertしていない`origin='table_correction'`の一回だけである。
+Product Planの直前Turn semanticsは維持し、revert後の同じTurnの再commitなど全campaign lifecycleは
+`rebuild_projection`の責務外、対象Turnのlifecycle terminal / 後続遷移は`project_turn_status`側の責務とする。
+任意revertはNon-goalである。
 
 TranscriptEntryとTelemetryEntryは`DomainEvent` unionにも`rebuild_projection`の入力にも含めない。
 sequenceはCampaign内で厳密な1開始連番、`event_id`はunique、`occurred_at`は表示用metadataであり、
@@ -1585,9 +1596,27 @@ $pythonExe = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '.venv/Scr
 if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "P0-03 .venv python was not found." }
 
 $negativeFixture = 'tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py'
-$negativeOutput = (& $pythonExe -m mypy --strict $negativeFixture 2>&1 | Out-String)
-$negativeExit = $LASTEXITCODE
+$mypyPathWasPresent = Test-Path -LiteralPath 'Env:MYPYPATH'
+$mypyPathValue = if ($mypyPathWasPresent) { $env:MYPYPATH } else { $null }
+try {
+    $env:MYPYPATH = Join-Path $repositoryRoot 'src'
+    $negativeOutput = (& $pythonExe -m mypy --strict $negativeFixture 2>&1 | Out-String)
+    $negativeExit = $LASTEXITCODE
+} finally {
+    if ($mypyPathWasPresent) {
+        $env:MYPYPATH = $mypyPathValue
+    } else {
+        Remove-Item -LiteralPath 'Env:MYPYPATH' -ErrorAction SilentlyContinue
+    }
+}
+if ((Test-Path -LiteralPath 'Env:MYPYPATH') -ne $mypyPathWasPresent) {
+    throw "MYPYPATH presence was not restored."
+}
+if ($mypyPathWasPresent -and $env:MYPYPATH -ne $mypyPathValue) {
+    throw "MYPYPATH value was not restored."
+}
 $negativeOutput
+$normalizedNegativeOutput = $negativeOutput.Replace('\', '/')
 $negativeLines = @($negativeOutput -split "`r?`n" | Where-Object { $_ -ne '' })
 $errorLines = @($negativeLines | Where-Object { $_ -match 'error:' })
 $argTypeLines = @($errorLines | Where-Object { $_ -match '\[arg-type\]' })
@@ -1595,7 +1624,7 @@ $otherErrorLines = @($errorLines | Where-Object { $_ -notmatch '\[arg-type\]' })
 if ($negativeExit -ne 1) { throw "negative mypy expected exit 1, got $negativeExit." }
 if ($errorLines.Count -ne 2 -or $argTypeLines.Count -ne 2 -or $otherErrorLines.Count -ne 0) { throw "negative mypy error surface mismatch." }
 foreach ($fragment in @($negativeFixture, 'rebuild_projection', 'TranscriptEntry', 'TelemetryEntry')) {
-    if ($negativeOutput -notmatch [regex]::Escape($fragment)) { throw "negative mypy output lacks fragment: $fragment" }
+    if ($normalizedNegativeOutput -notmatch [regex]::Escape($fragment)) { throw "negative mypy output lacks fragment: $fragment" }
 }
 "negative mypy exit $negativeExit; arg-type=$($argTypeLines.Count); other-errors=$($otherErrorLines.Count)"
 ~~~
@@ -1913,7 +1942,12 @@ P0-03の実装は次の3 logical commitだけに分ける。各commitのscope外
 P0-03 integrated diffの`check-scope`は、上の3 commitが全て着地し、レビュー済みdiffを統合した
 後に、オーケストレーターが全着地diffへ1回だけ実行する。各子commitで重複実行しない。
 
-Gate証拠は7 raw fixture、17 payload、DomainEventValidationIssue / DomainEventValidationErrorのredaction、Projection handwritten
+レビューでblocking補正が必要になった場合は、既存logical commitのscopeを越えない後続補正commitを
+許可する。補正commitは既存logical commitの責務・許可path内に限定し、integrated diffへ含める。
+blocking解消のための追加test/source補正もこの規則に従う限り計画逸脱とは扱わない。
+
+Gate証拠は7 raw fixture、17 payload、直前のcommitted Turnだけをtargetにできる`TurnReverted`のfail-closed検証、
+DomainEventValidationIssue / DomainEventValidationErrorのredaction、Projection handwritten
 expected（最終sequence 27）、turn status、Fact ID vector、ContractModel sabotage、config/app
 identity、11-path rglob manifest、normal mypy 0、negative mypy exit 1 / `[arg-type]` 2 / 他error
 0、error lines exactly 2、fixture filename / `rebuild_projection` / `TranscriptEntry` / `TelemetryEntry` fragment、
