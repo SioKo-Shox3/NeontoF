@@ -504,6 +504,22 @@ def test_rebuild_projection_fails_closed_for_invalid_or_repeated_reverts() -> No
     with pytest.raises(DomainEventValidationError):
         rebuild_projection(events + (repeated_revert,))
 
+    non_latest_target_payload = events[25].payload.model_copy(update={"target_turn_id": "turn:one"})
+    non_latest_target = events[25].model_copy(update={"payload": non_latest_target_payload})
+    non_latest_target_events = events[:25] + (non_latest_target,) + events[26:]
+    assert tuple(event.event_id for event in non_latest_target_events) == tuple(
+        event.event_id for event in events
+    )
+    assert tuple(event.sequence for event in non_latest_target_events) == tuple(
+        event.sequence for event in events
+    )
+    with pytest.raises(DomainEventValidationError) as non_latest_raised:
+        rebuild_projection(non_latest_target_events)
+    assert any(
+        issue.code == "invalid_sequence" and issue.path == "events[25].payload.target_turn_id"
+        for issue in non_latest_raised.value.issues
+    )
+
 
 @pytest.mark.parametrize("container_type", ("list", "dict"))
 def test_rebuild_projection_rejects_cyclic_fact_value_as_domain_validation_error(
