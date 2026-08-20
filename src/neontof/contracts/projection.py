@@ -123,10 +123,12 @@ def _validate_revert_targets(
 ) -> tuple[DomainEventValidationIssue, ...]:
     committed_turn_counts: dict[TurnId, int] = {}
     reverted_turns: set[TurnId] = set()
+    last_committed_turn_id: TurnId | None = None
     issues: list[DomainEventValidationIssue] = []
     for index, event in enumerate(events):
         if isinstance(event, TurnCommittedEvent) and event.turn_id is not None:
             committed_turn_counts[event.turn_id] = committed_turn_counts.get(event.turn_id, 0) + 1
+            last_committed_turn_id = event.turn_id
         elif isinstance(event, TurnRevertedEvent):
             target = event.payload.target_turn_id
             committed_count = committed_turn_counts.get(target, 0)
@@ -144,6 +146,14 @@ def _validate_revert_targets(
                         f"events[{index}].payload.target_turn_id",
                         "invalid_sequence",
                         "revert target must have exactly one prior committed turn",
+                    )
+                )
+            if last_committed_turn_id is not None and target != last_committed_turn_id:
+                issues.append(
+                    _issue(
+                        f"events[{index}].payload.target_turn_id",
+                        "invalid_sequence",
+                        "revert target must be the most recently committed turn",
                     )
                 )
             if target in reverted_turns:
