@@ -165,6 +165,34 @@ def test_unknown_fields_version_and_event_are_sanitized_validation_errors() -> N
         assert raised.value.__context__ is None
 
 
+@pytest.mark.parametrize("unknown_location", ("top_level", "payload"))
+def test_unknown_field_name_secret_is_redacted_from_validation_surfaces(
+    unknown_location: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from neontof.contracts.event_parser import DomainEventValidationError, parse_domain_event
+
+    sentinel = f"UNKNOWN_FIELD_NAME_SECRET_{unknown_location.upper()}"
+    event = _minimal_event()
+    caplog.set_level(logging.ERROR)
+    if unknown_location == "top_level":
+        event[sentinel] = "rejected"
+    else:
+        payload = event["payload"]
+        assert isinstance(payload, dict)
+        payload[sentinel] = "rejected"
+
+    with pytest.raises(DomainEventValidationError) as raised:
+        parse_domain_event(json.dumps(event).encode("utf-8"))
+
+    error = raised.value
+    assert any(issue.code == "unknown_field" for issue in error.issues)
+    assert all(sentinel not in issue.path for issue in error.issues)
+    _assert_redacted(error, sentinel)
+    logging.getLogger("neontof.contracts").error("validation failed: %s", error)
+    assert sentinel not in caplog.text
+
+
 def test_invalid_payload_fixture_covers_wire_and_sequence_failures() -> None:
     from neontof.contracts.event_parser import (
         DomainEventValidationError,

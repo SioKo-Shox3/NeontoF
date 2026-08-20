@@ -444,6 +444,37 @@ def test_rebuild_projection_revalidates_every_canonical_event_before_reducing(
         rebuild_projection(sabotaged_events)
 
 
+def test_rebuild_projection_rejects_duplicate_turn_commit_before_revert() -> None:
+    from neontof.contracts.domain import TurnCommittedEvent, TurnRevertedEvent
+    from neontof.contracts.event_parser import (
+        DomainEventValidationError,
+        parse_domain_event_sequence,
+    )
+    from neontof.contracts.projection import rebuild_projection
+
+    events = parse_domain_event_sequence(_fixture_bytes("minimal-session.v1.json"))
+    committed_event = events[19]
+    assert isinstance(committed_event, TurnCommittedEvent)
+    duplicate_commit = committed_event.model_copy(
+        update={"event_id": "event:e20-duplicate", "sequence": 21}
+    )
+    events_with_duplicate = (
+        events[:20]
+        + (duplicate_commit,)
+        + tuple(event.model_copy(update={"sequence": event.sequence + 1}) for event in events[20:])
+    )
+
+    assert tuple(event.sequence for event in events_with_duplicate) == tuple(
+        range(1, len(events_with_duplicate) + 1)
+    )
+    reverted_event = events_with_duplicate[-2]
+    assert isinstance(reverted_event, TurnRevertedEvent)
+    assert duplicate_commit.turn_id == "turn:two"
+    assert reverted_event.payload.target_turn_id == "turn:two"
+    with pytest.raises(DomainEventValidationError):
+        rebuild_projection(events_with_duplicate)
+
+
 def test_domain_event_and_payload_values_are_immutable() -> None:
     from neontof.contracts.event_parser import parse_domain_event_sequence
 
@@ -472,6 +503,33 @@ def test_rebuild_projection_fails_closed_for_invalid_or_repeated_reverts() -> No
     repeated_revert = events[25].model_copy(update={"event_id": "event:e28", "sequence": 28})
     with pytest.raises(DomainEventValidationError):
         rebuild_projection(events + (repeated_revert,))
+
+
+@pytest.mark.parametrize("container_type", ("list", "dict"))
+def test_rebuild_projection_rejects_cyclic_fact_value_as_domain_validation_error(
+    container_type: str,
+) -> None:
+    from neontof.contracts.event_parser import (
+        DomainEventValidationError,
+        parse_domain_event_sequence,
+    )
+    from neontof.contracts.projection import rebuild_projection
+
+    events = parse_domain_event_sequence(_fixture_bytes("minimal-session.v1.json"))
+    cyclic_list: list[object] = []
+    cyclic_dict: dict[str, object] = {}
+    if container_type == "list":
+        cyclic_list.append(cyclic_list)
+        cyclic_value: object = cyclic_list
+    else:
+        cyclic_dict["self"] = cyclic_dict
+        cyclic_value = cyclic_dict
+    cyclic_payload = events[9].payload.model_copy(update={"value": cyclic_value})
+    cyclic_fact = events[9].model_copy(update={"payload": cyclic_payload})
+    sabotaged_events = events[:9] + (cyclic_fact,) + events[10:]
+
+    with pytest.raises(DomainEventValidationError):
+        rebuild_projection(sabotaged_events)
 
 
 def test_domain_event_excludes_transcript_and_telemetry_inputs() -> None:

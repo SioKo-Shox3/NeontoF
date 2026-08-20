@@ -62,6 +62,25 @@ def test_frozen_json_is_tuple_based_sorted_and_alias_disconnected() -> None:
         setitem(immutable_nested_value, 0, (("replaced", None),))
 
 
+@pytest.mark.parametrize("container_type", ("list", "dict"))
+def test_frozen_json_rejects_self_referential_json_without_recursion_error(
+    container_type: str,
+) -> None:
+    from neontof.contracts.base import FrozenJsonValue
+
+    cyclic_list: list[object] = []
+    cyclic_dict: dict[str, object] = {}
+    if container_type == "list":
+        cyclic_list.append(cyclic_list)
+        cyclic_value: object = cyclic_list
+    else:
+        cyclic_dict["self"] = cyclic_dict
+        cyclic_value = cyclic_dict
+
+    with pytest.raises(ValidationError):
+        TypeAdapter(FrozenJsonValue).validate_python(cyclic_value, strict=True)
+
+
 def test_frozen_json_rejects_nonfinite_float_and_bool_as_strict_int() -> None:
     from neontof.contracts.base import FrozenJsonValue
 

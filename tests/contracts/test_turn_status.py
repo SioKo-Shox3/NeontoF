@@ -38,6 +38,27 @@ def test_turn_two_remains_committed_after_revert_and_turn_three_is_aborted() -> 
     assert project_turn_status("turn:three", events) == "aborted"
 
 
+def test_unrelated_revert_envelope_is_ignored_for_turn_three_status() -> None:
+    from neontof.contracts.domain import TurnRevertedEvent
+    from neontof.contracts.event_parser import parse_domain_event_sequence
+    from neontof.contracts.turn_status import project_turn_status
+
+    events = parse_domain_event_sequence(_fixture_bytes("minimal-session.v1.json"))
+    revert_event = events[25]
+    assert isinstance(revert_event, TurnRevertedEvent)
+    unrelated_revert = revert_event.model_copy(update={"turn_id": "turn:three"})
+    events_with_unrelated_revert = events[:25] + (unrelated_revert,) + events[26:]
+
+    assert unrelated_revert.payload.target_turn_id == "turn:two"
+    assert tuple(event.sequence for event in events_with_unrelated_revert) == tuple(
+        range(1, len(events_with_unrelated_revert) + 1)
+    )
+    event_ids = tuple(event.event_id for event in events_with_unrelated_revert)
+    assert len(event_ids) == len(set(event_ids))
+    assert {event.campaign_id for event in events_with_unrelated_revert} == {"campaign:alpha"}
+    assert project_turn_status("turn:three", events_with_unrelated_revert) == "aborted"
+
+
 def test_other_turns_and_null_context_events_are_ignored() -> None:
     from neontof.contracts.event_parser import parse_domain_event_sequence
     from neontof.contracts.turn_status import project_turn_status
