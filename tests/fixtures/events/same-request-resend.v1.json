@@ -1,0 +1,133 @@
+[
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:r01",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 1,
+    "occurred_at": "2026-08-19T13:00:01Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {
+      "name": "NeontoF"
+    }
+  },
+  {
+    "type": "SessionStarted",
+    "event_id": "event:r02",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 2,
+    "occurred_at": "2026-08-19T13:00:02Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "scenario_id": "scenario:minimal",
+      "title": "Resend"
+    }
+  },
+  {
+    "type": "SceneStarted",
+    "event_id": "event:r03",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": null,
+    "sequence": 3,
+    "occurred_at": "2026-08-19T13:00:03Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "label": "Hall"
+    }
+  },
+  {
+    "type": "PlayerInputAccepted",
+    "event_id": "event:r04",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:one",
+    "sequence": 4,
+    "occurred_at": "2026-08-19T13:00:04Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "turn_request_id": "turn-request:one",
+      "input_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  {
+    "type": "PlayerInputAccepted",
+    "event_id": "event:r05",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:one",
+    "sequence": 5,
+    "occurred_at": "2026-08-19T13:00:05Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "turn_request_id": "turn-request:one",
+      "input_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  {
+    "type": "TurnResumed",
+    "event_id": "event:r06",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:one",
+    "sequence": 6,
+    "occurred_at": "2026-08-19T13:00:06Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "turn_request_id": "turn-request:one"
+    }
+  },
+  {
+    "type": "TurnCommitted",
+    "event_id": "event:r07",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:one",
+    "sequence": 7,
+    "occurred_at": "2026-08-19T13:00:07Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "turn_request_id": "turn-request:one"
+    }
+  },
+  {
+    "type": "TurnResumed",
+    "event_id": "event:r08",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:one",
+    "sequence": 8,
+    "occurred_at": "2026-08-19T13:00:08Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "turn_request_id": "turn-request:one"
+    }
+  }
+]

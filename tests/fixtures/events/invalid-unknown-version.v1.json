@@ -1,0 +1,18 @@
+[
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:v01",
+    "event_version": 2,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 1,
+    "occurred_at": "2026-08-19T11:10:01Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {
+      "name": "NeontoF"
+    }
+  }
+]

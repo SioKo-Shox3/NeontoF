@@ -1,0 +1,30 @@
+[
+  {
+    "type": "TurnStarted",
+    "event_id": "event:x01",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:one",
+    "sequence": 1,
+    "occurred_at": "2026-08-19T11:20:01Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {}
+  },
+  {
+    "type": "UnknownEvent",
+    "event_id": "event:x02",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 2,
+    "occurred_at": "2026-08-19T11:20:02Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {}
+  }
+]

@@ -40,9 +40,16 @@ def test_load_server_options_rejects_invalid_values(key: str, value: str) -> Non
 
 
 def test_contract_model_is_strict_forbid_and_frozen() -> None:
+    from neontof.contracts import base as contracts_base
+
+    from neontof import app as app_module
+
     assert ContractModel.model_config["strict"] is True
     assert ContractModel.model_config["extra"] == "forbid"
     assert ContractModel.model_config["frozen"] is True
+    assert ContractModel.model_config["revalidate_instances"] == "always"
+    assert ContractModel is contracts_base.ContractModel
+    assert app_module.ContractModel is contracts_base.ContractModel
 
     with pytest.raises(ValidationError):
         ServerOptions.model_validate({"host": "127.0.0.1", "port": "8765"})

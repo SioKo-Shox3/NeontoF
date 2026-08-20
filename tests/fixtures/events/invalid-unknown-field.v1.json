@@ -1,0 +1,36 @@
+[
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:u01",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 1,
+    "occurred_at": "2026-08-19T11:00:01Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {
+      "name": "NeontoF"
+    },
+    "unexpected_top_level": "rejected"
+  },
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:u02",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 2,
+    "occurred_at": "2026-08-19T11:00:02Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {
+      "name": "NeontoF",
+      "unexpected_payload": "rejected"
+    }
+  }
+]

@@ -1,0 +1,197 @@
+[
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:p01",
+    "event_version": 1,
+    "campaign_id": "Campaign:Alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 1,
+    "occurred_at": "2026-08-19T11:30:01Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {
+      "name": "NeontoF"
+    }
+  },
+  {
+    "type": "SessionStarted",
+    "event_id": "event:p02",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 2,
+    "occurred_at": "2026-02-30T11:30:02Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "scenario_id": null,
+      "title": "Invalid date"
+    }
+  },
+  {
+    "type": "SceneStarted",
+    "event_id": "event:p03",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": null,
+    "sequence": 3,
+    "occurred_at": "2026-08-19T11:30:03+00:00",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "label": "Offset"
+    }
+  },
+  {
+    "type": "SceneEnded",
+    "event_id": "event:p04",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": null,
+    "sequence": 4,
+    "occurred_at": "2026-08-19T11:30:04.123Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "reason": "completed"
+    }
+  },
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:p05",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 5,
+    "occurred_at": "2026-08-19T11:30:05z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {
+      "name": "Lowercase z"
+    }
+  },
+  {
+    "type": "ClockAdvanced",
+    "event_id": "event:p06",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:one",
+    "sequence": 6,
+    "occurred_at": "2026-08-19T11:30:06Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "clock_id": "clock:session",
+      "delta": true
+    }
+  },
+  {
+    "type": "TurnReverted",
+    "event_id": "event:p07",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 7,
+    "occurred_at": "2026-08-19T11:30:07Z",
+    "origin": "system",
+    "visibility": "gm_only",
+    "payload": {
+      "target_turn_id": "turn:one"
+    }
+  },
+  {
+    "type": "PlayerInputAccepted",
+    "event_id": "event:P08",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:One",
+    "sequence": 8,
+    "occurred_at": "2026-08-19T11:30:08Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "turn_request_id": "turn-request:one",
+      "input_digest": "not-a-sha256"
+    }
+  },
+  {
+    "type": "ResourceChanged",
+    "event_id": "event:p09",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": "session:one",
+    "scene_id": "scene:hall",
+    "turn_id": "turn:one",
+    "sequence": 9,
+    "occurred_at": "2026-08-19T11:30:09Z",
+    "origin": "in_world",
+    "visibility": "player_visible",
+    "payload": {
+      "resource_id": "resource:gold",
+      "entity_id": "entity:hero",
+      "delta": "1"
+    }
+  },
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:p10",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 10,
+    "occurred_at": "2026-08-19T11:30:10Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {}
+  },
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:p11",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 12,
+    "occurred_at": "2026-08-19T11:30:11Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {
+      "name": "Missing sequence"
+    }
+  },
+  {
+    "type": "CampaignCreated",
+    "event_id": "event:p11",
+    "event_version": 1,
+    "campaign_id": "campaign:alpha",
+    "session_id": null,
+    "scene_id": null,
+    "turn_id": null,
+    "sequence": 12,
+    "occurred_at": "2026-08-19T11:30:12Z",
+    "origin": "in_world",
+    "visibility": "gm_only",
+    "payload": {
+      "name": "Duplicate sequence and event ID"
+    }
+  }
+]

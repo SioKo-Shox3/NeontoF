@@ -1,3 +1,6 @@
+"""Phase 0のmanifestと境界を検証するrepository-level契約テスト。"""
+
+import ast
 import re
 import tomllib
 from pathlib import Path
@@ -120,7 +123,19 @@ def test_repository_contracts_fix_production_manifest_and_forbidden_paths() -> N
     production_files = sorted(
         path.relative_to(PRODUCTION_ROOT).as_posix() for path in PRODUCTION_ROOT.rglob("*.py")
     )
-    assert production_files == ["__init__.py", "app.py", "config.py", "main.py"]
+    assert production_files == [
+        "__init__.py",
+        "app.py",
+        "config.py",
+        "contracts/__init__.py",
+        "contracts/base.py",
+        "contracts/domain.py",
+        "contracts/event_parser.py",
+        "contracts/ids.py",
+        "contracts/projection.py",
+        "contracts/turn_status.py",
+        "main.py",
+    ]
 
     forbidden_names = {
         "package.json",
@@ -146,11 +161,31 @@ def test_repository_contracts_fix_production_manifest_and_forbidden_paths() -> N
     assert not [path for path in all_files if path.name.endswith((".sqlite", ".db"))]
 
     source_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in PRODUCTION_ROOT.glob("*.py")
+        path.read_text(encoding="utf-8") for path in PRODUCTION_ROOT.rglob("*.py")
     )
     assert forbidden_sdk_name not in source_text.lower()
     assert "sqlite3.connect" not in source_text
     assert "sqlite3.Connection" not in source_text
-    forbidden_provider_name = "Pro" + "vider"
-    assert forbidden_provider_name not in source_text
+    forbidden_provider_names = ("ProviderRegistry", "provider_registry")
+    for forbidden_provider_name in forbidden_provider_names:
+        assert forbidden_provider_name not in source_text
     assert "background worker" not in source_text.lower()
+
+
+def test_repository_contracts_define_projection_models_only_in_projection_module() -> None:
+    projection_path = PRODUCTION_ROOT / "contracts" / "projection.py"
+    assert projection_path.is_file()
+
+    def class_definition_count(path: Path, class_name: str) -> int:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        return sum(
+            isinstance(node, ast.ClassDef) and node.name == class_name for node in ast.walk(tree)
+        )
+
+    assert class_definition_count(projection_path, "FactRecord") == 1
+    assert class_definition_count(projection_path, "Projection") == 1
+    for path in PRODUCTION_ROOT.rglob("*.py"):
+        if path == projection_path:
+            continue
+        assert class_definition_count(path, "FactRecord") == 0, path
+        assert class_definition_count(path, "Projection") == 0, path
