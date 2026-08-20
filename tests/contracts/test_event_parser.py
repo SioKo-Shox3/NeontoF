@@ -422,7 +422,7 @@ def test_invalid_payload_fixture_covers_wire_and_sequence_failures() -> None:
             0,
             ((("payload", "unexpected_payload"), "rejected", False),),
             "unknown_field",
-            "payload.unexpected_payload",
+            "payload.field",
             id="unknown-payload-field",
         ),
         pytest.param(
@@ -449,7 +449,7 @@ def test_invalid_payload_fixture_covers_wire_and_sequence_failures() -> None:
             0,
             ((("unexpected_top_level",), "rejected", False),),
             "unknown_field",
-            "unexpected_top_level",
+            "field",
             id="unknown-top-level-field",
         ),
         pytest.param(
