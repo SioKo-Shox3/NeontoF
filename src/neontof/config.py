@@ -3,13 +3,11 @@
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
+from neontof.contracts.base import ContractModel
 
-class ContractModel(BaseModel):
-    """公開契約に共通する不変・厳密なPydantic設定。"""
-
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+__all__ = ("ContractModel", "ServerOptions", "load_server_options")
 
 
 class ServerOptions(ContractModel):

@@ -4,7 +4,9 @@ from typing import Literal
 
 from fastapi import FastAPI
 
-from neontof.config import ContractModel
+from neontof.contracts.base import ContractModel
+
+__all__ = ("ContractModel", "HealthResponse", "create_app")
 
 
 class HealthResponse(ContractModel):
