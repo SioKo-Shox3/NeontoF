@@ -64,6 +64,8 @@ docs/agent-guide/build-and-verify.md、docs/agent-guide/coding-style.mdである
 - Provider / Ruleset / Scenario / Memoryの汎用拡張Interface
 - 認証、Docker配布、公開deploy、複数人、Scenario Editor、本格戦闘
 - Phase 1のCharacter / Scenario Loader、Model Gateway、Context Builder、production pipeline
+- production Context Builder / visibility filter、Event append、Turn Engine、retry runtime、
+  real Provider、OpenAI SDK
 - Vite、vanilla TypeScript、package.json、tsconfig、Vitest、Zod、FastifyのPhase 0実装
 
 ### 1.3 Entry Conditions と実測状態
@@ -209,8 +211,17 @@ NeontoFリポジトリ内で許可するpathは次の集合だけである。
 
 P0-02aのthrowaway probeはRepository外の一意なtemporary directoryだけを使う。承認後に
 A/Cのprobeを再実行しない。generated venv、cache、log、実データはcommitしない。
-Phase 0のchanged-pathは入口で記録した`phaseBaseCommit`から次のallowed root path manifestとの
+Phase 0のchanged-pathは入口で記録した`phaseBaseCommit`からfinal allowed phase path manifestとの
 集合差分で検査する。manifest外の変更が1つでもあればFAILとする。
+
+`tests/test_repository_contracts.py`はPhase 0の最終統合で一度だけ更新する統合専用pathである。
+P0-04〜P0-07の個別Work Packageはこのfileのmanifest hunkを変更せず、各自のproduction sourceと
+focused testだけを着地させる。全production sourceが着地した後に、最終20相対pathと
+`rglob`集合差分を検証するmanifest統合commitを一つだけ作る。各packageの具体的なpathは各節の
+完全列挙に従い、manifestの二重所有・途中版の共有hunkを作らない。
+P0-03 §9.5の11-path `rglob`はP0-03 focused gate専用である。
+Phase 0 final verificationでは再利用しない。final verificationは§14の20件production manifestを
+専用blockで比較する。
 
 ~~~text
 .python-version
@@ -383,10 +394,14 @@ MyWorkflow build-and-verify actual command反映commit / deploy差分0
 P0-03 Core Domain / Event Contract
   ├────────────┬────────────┐
   ↓            ↓            ↓
-P0-04        P0-05        P0-06       ← 互いに素なpathで並列
+P0-04        P0-05        P0-06       ← 実装・仕様・focused testは並列
   ↓
-P0-07                              ← P0-04 commit後
+P0-07                              ← P0-04 commit後。P0-05 / P0-06と並列可
   └────────────┴────────────┘
+  ↓
+全production source 20件の着地
+  ↓
+tests/test_repository_contracts.pyのproduction manifestを一度だけ統合
                  ↓
 統合シーム監査・Phase Gate・Status Report
 ~~~
@@ -396,14 +411,15 @@ P0-07                              ← P0-04 commit後
 | P0-02b | 候補B承認 | ADR commit後、MyWorkflowの`docs/neontof-phase-00-guides` branchで3ファイルを更新・review・commit・deploy。NeontoFのP0-01bとは別commit |
 | P0-01b | P0-02bとMyWorkflowのB guide commit | Python共通設定、entrypoint、CIを所有するため単独。実測後にMyWorkflowの`build-and-verify.md`を別commitでactual commandへ更新 |
 | P0-03 | P0-01b + P0-01b実測後のMyWorkflow `build-and-verify.md` commit | 共通ID / Event / Visibilityを所有するため単独 |
-| P0-04 | P0-03 | P0-05 / P0-06と並列可 |
-| P0-05 | P0-03 | P0-04 / P0-06と並列可 |
-| P0-06 | P0-03 | P0-04 / P0-05と並列可 |
-| P0-07 | P0-04 | P0-05 / P0-06のreviewと並列可 |
+| P0-04 | P0-03 | P0-05 / P0-06と実装・仕様・focused testを並列可。manifest hunkは変更しない |
+| P0-05 | P0-03 | P0-04 / P0-06と実装・仕様・focused testを並列可。manifest hunkは変更しない |
+| P0-06 | P0-03 | P0-04 / P0-05と実装・仕様・focused testを並列可。manifest hunkは変更しない |
+| P0-07 | P0-04 | P0-04のAcceptedSemanticResult / test-only materializer commit後。P0-05 / P0-06のreviewと並列可。manifest hunkは変更しない |
 
 依存元diffは一次review、非メイン側AI二次review、検証、commitまで着地させてから後続を開始
-する。全diff統合後は重複、Signature衝突、versionずれ、Python経路へのNode / OpenAI混入、
-SQLite所有権の合成退行だけを1回シーム監査する。
+する。全production sourceの着地後にmanifest統合commitを一度だけ行い、その後の統合diffは
+重複、Signature衝突、versionずれ、Python経路へのNode / OpenAI混入、SQLite所有権の合成退行だけを
+1回シーム監査する。focused testはmanifest testを含めず、manifest統合後に全suiteを通す。
 
 ---
 
@@ -994,8 +1010,9 @@ P0-03の新規pathは次の完全列挙だけである。ここにない新規pa
 | `tests/test_config.py` / `tests/test_repository_contracts.py` | config identity、app regression、production manifest、extra pathを検証する。 |
 | `tests/typecheck_fixtures/transcript_telemetry_into_domain_event.py` | 実型のproduction sinkへTranscript / Telemetryを渡すnegative mypyだけを保持する。 |
 
-P0-03のproduction manifestは次の11相対pathに固定する。既存pathも含め、実装者はこの集合を
-勝手に拡張しない。
+P0-03 focused gateのproduction manifestは次の11相対pathに固定する。既存pathも含め、実装者は
+この集合を勝手に拡張しない。これはP0-03時点のbaselineであり、Phase 0 final verificationの
+production manifestではない。
 
 ~~~text
 src/neontof/__init__.py
@@ -1014,7 +1031,8 @@ src/neontof/contracts/turn_status.py
 `tests/test_repository_contracts.py`は固定globの書き漏れで済ませず、
 `Path("src/neontof").rglob("*.py")`で実ファイルを列挙し、POSIX相対pathへ正規化した集合と
 上の11相対pathの差分を検証する。production manifest外の`.py`、manifestにないpath、
-`projection.py`以外の`FactRecord` / `Projection`定義をFAILにする。
+`projection.py`以外の`FactRecord` / `Projection`定義をFAILにする。このsource scanはP0-03
+focused gateだけで実行し、Phase 0 final verificationでは§14の20件専用scanを実行する。
 
 MyWorkflowの正本
 `C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\agent-guide\build-and-verify.md`
@@ -1042,10 +1060,12 @@ class ContractModel(BaseModel):
 参照するidentityを検証する。strict / forbid / frozen / `revalidate_instances="always"`を
 config側や各subtype側で別の設定にしない。
 
-Immutable JSONの公開型には`list` / `dict`を使わない。arrayはtuple、objectはkeyがsortedかつ
-uniqueな`tuple[tuple[str, FrozenJsonValue], ...]`、scalarは`None | str | bool | strict int |
-finite float`とする。`bool`は`int`として受理しない。finiteでないfloatはrejectする。入力の
-aliasを保持せずにdeep copyして凍結し、nested mutationも拒否する。
+Fact / leaf valueとtransport内部のimmutable JSON表現には`list` / `dict`を使わない。arrayはtuple、
+objectはkeyがsortedかつuniqueな`tuple[tuple[str, FrozenJsonValue], ...]`、scalarは
+`None | str | bool | strict int | finite float`とする。`bool`は`int`として受理しない。finiteでない
+floatはrejectする。入力のaliasを保持せずにdeep copyして凍結し、nested mutationも拒否する。
+この`FrozenJsonValue`をP0-04 Semantic Result rootやP0-07 ModelResponse.payloadへ直接渡さず、
+rootはraw mapping/objectまたはtyped `SemanticResultV1`、transportの内部canonical表現だけが使う。
 
 ~~~python
 import re
@@ -1136,7 +1156,7 @@ ModelCallIdもkind:slug grammarで個別に定義する。Event typeは次の17�
 | `ResourceChanged` | `resource_id: ResourceId`、`entity_id: EntityId`、`delta: strict int` | 対象Entityのresource値へdeltaを適用する。 |
 | `CharacterMoved` | `character_id: CharacterId`、`from_location_id: LocationId | None`、`to_location_id: LocationId` | locationの前値と新値を検証して適用する。 |
 | `ClockAdvanced` | `clock_id: ClockId`、`delta: positive strict int` | clockをdeltaだけ進める。 |
-| `FactAsserted` | `kind: Literal["fact", "ruling", "agreement", "plan", "promise"]`、`holder: Literal["world", "player_character", "rumor"] | NpcId`、`subject_id: EntityId | None`、`predicate: strict non-empty str`、`value: FrozenJsonValue` | Event IDとordinalからFactを追加する。 |
+| `FactAsserted` | `kind: Literal["fact", "ruling", "agreement", "plan", "promise"]`、`holder: Literal["world", "player_character", "rumor"] | NpcId`、`subject_id: EntityId | None`、`predicate: strict non-empty str`、`value: FrozenJsonValue` | Event IDとEvent内の0-based ordinalからFactを追加する。1 Event 1 Factならordinalは0。 |
 | `FactSuperseded` | `target_fact_id: FactId` | target Factのstatusをsupersededにする。 |
 | `TurnAwaitingPlayer` | `turn_request_id: TurnRequestId` | Turn statusをawaiting_playerへ進める。 |
 | `TurnResumed` | `turn_request_id: TurnRequestId` | Turn statusをrunningへ戻す。 |
@@ -1394,7 +1414,7 @@ sequenceはCampaign内で厳密な1開始連番、`event_id`はunique、`occurre
   URL sentinelを入れて全surfaceを確認し、7 fixture全てをsecret / narrative / transcript /
   telemetry / raw_input / API key語でscanする。
 - [ ] `tests/test_config.py`のconfig/app regression、`tests/test_repository_contracts.py`の
-  11-path production manifestと`rglob`集合差分、`contracts/projection.py`内の`FactRecord` /
+  P0-03 focused 11-path production manifestと`rglob`集合差分、`contracts/projection.py`内の`FactRecord` /
   `Projection` class定義各1件と他production pathでの定義0件、ProviderRegistry /
   provider_registryだけを対象にした禁止scan、P0-01bで作成済みApplicationのhealth regressionを
   同じP0-03変更で壊さない。
@@ -1706,7 +1726,7 @@ source-only patternには`openai`、`anthropic`、`sqlite3.connect`、`sqlite3.C
 `provider_registry`を含める。全`rg`でexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上を
 tool failureとして扱う。
 
-#### rglob source scan
+#### P0-03 focused rglob source scan（11-path baseline）
 
 ~~~powershell
 $repositoryRoot = (& git rev-parse --show-toplevel | Out-String).Trim()
@@ -1723,8 +1743,8 @@ $rglobOutput
 if ($rglobExit -ne 0) { throw "rglob production manifest mismatch with exit $rglobExit." }
 ~~~
 
-`rglob`のactual集合と11相対path manifestが完全一致し、extra source / missing sourceが0件で
-あることを確認する。
+P0-03 focused gateとして、`rglob`のactual集合と11相対path baselineが完全一致し、extra source /
+missing sourceが0件であることを確認する。このblockをPhase 0 final verificationへ持ち込まない。
 
 #### P0-01bで確定した最終Gateの再実行
 
@@ -1834,9 +1854,10 @@ if ($pythonPathWasPresent -and $env:PYTHONPATH -ne $pythonPathValue) { throw "PY
 
 API keyの元のpresence / valueは保存・復元するが、値は出力しない。network guard、lifecycle、
 workers probeはfresh Gateでも維持する。workers probeはstdout / stderrを捕捉し、exit exactly 2かつ
-`NEONTOF_WORKERS must be 1`を含むことを要求する。source scanは上の
-forbidden検索とrglob scanを最終Gateでも同じroot / python解決で再実行し、openai / forbidden
-API / sqlite connection / network / validation bypass / manifest外sourceを0件にする。
+`NEONTOF_WORKERS must be 1`を含むことを要求する。source scanはP0-03 focused Gateとして上の
+forbidden検索と11-path rglob scanを同じroot / python解決で実行し、openai / forbidden API /
+sqlite connection / network / validation bypass / manifest外sourceを0件にする。Phase 0 final
+verificationのsource scanは§15の20件専用blockを使う。
 P0-01bで確定した期待出力は`No broken requirements found.`、network test成功、
 `entrypoint_lifecycle=graceful_exit_0_rebind_health_200`、`workers=2 exit 2`であり、未確認の
 remote CIは成功と扱わずpendingにする。
@@ -1964,7 +1985,7 @@ required語、forbidden検索0件、P0-01b最終Gate再実行の実出力とす�
 Evidence validation、fixture、HTTP POST + SSE + buffered fallbackのpure boundaryで固定する。
 
 **Non-goal:** Prompt、実Model call、Event append、公開UI、本番SSE endpoint、自然言語矛盾検出、
-Context Builder、production Semantic Result pipeline。
+production Context Builder / visibility filter、production Semantic Result pipeline。
 
 ### 10.2 作成ファイルと責務
 
@@ -1973,15 +1994,33 @@ Context Builder、production Semantic Result pipeline。
 - src/neontof/contracts/semantic_result.py — Pydantic modelとTypeAdapterの構造Schemaだけ。
 - src/neontof/contracts/transport.py — HTTP POST request、SSE frame、buffered responseの
   pure contract。本番endpointは持たない。
+- tests/contracts/support/__init__.py — test-only support namespace。production exportを持たない。
 - tests/contracts/support/evaluate_semantic_contract.py — test-only validation oracle。
-- tests/contracts/support/materialize_proposed_events.py — test-only一対一materialize oracle。
+- tests/contracts/support/materialize_proposed_events.py — test-only`FixtureEventContext`と一対一
+  materialize oracle。
 - tests/contracts/test_semantic_result.py、test_transport.py — valid / invalid / Evidence /
   narrative-only / duplicate / mutation / SSE / buffered。
-- tests/fixtures/semantic-results/** — valid、invalid、evidence、duplicate、control fixture。
+- tests/fixtures/semantic-results/** — valid、invalid、evidence、duplicate、control fixture。Evidence fixtureは
+  P0-03 parser / `rebuild_projection`で得たFactRecordを`facts_by_id`へ載せ、Fact ID・visibility・predicate /
+  valueの一致を検証する。
+- `tests/test_repository_contracts.py` — focused testには含めず、全production source着地後の
+  最終manifest統合commitだけで更新する。
+
+P0-04で着地させるproduction sourceは`semantic_result.py`と`transport.py`だけである。
+P0-03の11相対path、P0-04〜P0-07を統合した最終20相対pathの完全列挙は§14に置き、途中の
+13-path manifestを個別commitで所有しない。
 
 ### 10.3 型とSignature
 
 ~~~python
+NonNegativeStrictInt: TypeAlias = Annotated[int, Field(strict=True, ge=0)]
+PositiveStrictInt: TypeAlias = Annotated[int, Field(strict=True, gt=0)]
+
+PublicationVisibility: TypeAlias = Literal["player_visible"] | NpcId
+
+# private BeforeValidator。組み込みのlist / tupleそのものだけを新しいtupleへcopyする。
+def _copy_exact_sequence(value: object) -> object: ...
+
 class ProposedResourceChanged(ContractModel):
     type: Literal["ResourceChanged"]
     payload: ResourceChangedPayload
@@ -2000,19 +2039,101 @@ ProposedEvent: TypeAlias = Annotated[
 ]
 PROPOSED_EVENT_ADAPTER = TypeAdapter(ProposedEvent)
 
+class ProposedFact(ContractModel):
+    kind: FactKind
+    holder: FactHolder
+    subject_id: EntityId | None
+    predicate: str
+    value: FrozenJsonValue
+    visibility: Visibility
+
 class EventProposalRef(ContractModel):
     type: Literal["event"]
-    index: int
+    index: NonNegativeStrictInt
 
 class FactProposalRef(ContractModel):
     type: Literal["fact"]
-    index: int
+    index: NonNegativeStrictInt
 
 ProposalRef: TypeAlias = Annotated[
     EventProposalRef | FactProposalRef,
     Field(discriminator="type"),
 ]
 PROPOSAL_REF_ADAPTER = TypeAdapter(ProposalRef)
+
+class RollSpec(ContractModel):
+    formula: str
+
+class Ruling(ContractModel):
+    rule_refs: tuple[str, ...]
+    facts_used: tuple[FactId, ...]
+    interpretation: str
+    roll_spec: RollSpec | None
+    proposed_effects: tuple[ProposalRef, ...]
+    is_house_ruling: bool
+
+class KnowledgeChange(ContractModel):
+    note: str
+
+class VisibilityChange(ContractModel):
+    note: str
+
+class ClarificationRequest(ContractModel):
+    question: str
+
+class Rejection(ContractModel):
+    reason: str
+    next_status: Literal["awaiting_player", "aborted"]
+
+class NarrativeBeat(ContractModel):
+    text: str
+
+class ProvisionalDetail(ContractModel):
+    id: EntityId
+    kind: str
+    label: str
+    scene_id: SceneId | None
+    visibility: Visibility
+
+class SuggestedAction(ContractModel):
+    label: str
+
+class EvidenceClaim(ContractModel):
+    fact_id: FactId
+    predicate: str
+    value: FrozenJsonValue
+
+class EvidenceRef(ContractModel):
+    claim: EvidenceClaim
+
+EvidenceFact: TypeAlias = FactRecord
+
+SemanticValidationIssueCode: TypeAlias = Literal[
+    "schema",
+    "unknown_field",
+    "unknown_version",
+    "invalid_result",
+    "invalid_event_proposal",
+    "invalid_fact_proposal",
+    "invalid_proposal_ref",
+    "unknown_entity",
+    "unknown_resource",
+    "unknown_character",
+    "unknown_location",
+    "unknown_clock",
+    "unknown_fact",
+    "invisible_fact",
+    "unrelated_visible_fact",
+    "claim_mismatch",
+    "duplicate_proposal",
+    "conflicting_control_fields",
+    "invalid_transition",
+]
+
+class ValidationIssue(ContractModel):
+    path: str
+    code: SemanticValidationIssueCode
+    message: str
 
 class SemanticResultV1(ContractModel):
     schema_version: Literal[1]
@@ -2032,23 +2153,41 @@ class SemanticResultV1(ContractModel):
 SEMANTIC_RESULT_ADAPTER = TypeAdapter(SemanticResultV1)
 ~~~
 
-Ruling、ProposedFact、KnowledgeChange、VisibilityChange、RollSpec、ClarificationRequest、
-Rejection、NarrativeBeat、ProvisionalDetail、EvidenceClaim、EvidenceRef、SuggestedAction、
-EvidenceFactもContractModelとする。全modelはstrict / forbid / frozen、collectionはtuple /
-frozensetとする。
+上の補助型を含む全ContractModelはstrict / forbid / frozen、collectionはtuple / frozensetとする。
+`NonNegativeStrictInt`は負数、bool、文字列数値を受理せず、`PositiveStrictInt`は0以下、bool、
+文字列数値を受理しない。`EvidenceFact`は新しいmodelを定義せず、P0-03の`FactRecord`をそのまま
+型aliasとして再利用する。`ValidationIssue`のcodeは上に列挙した有限集合だけを受理し、`path` /
+`message`にはraw input、未検証のvalue、secret、URL、raw path、Pydanticのraw error reprを保存しない。
+`ProposedFact.value`と`EvidenceClaim.value`は検証済みの`FrozenJsonValue`をleaf valueとしてだけ
+保持する。Semantic Resultのroot objectをtuple-of-pairsへ変換して渡さず、raw mapping/objectを
+`SEMANTIC_RESULT_ADAPTER`へ渡す。`FrozenJsonValue`はleafまたはtransport内部のimmutable表現に
+限定し、ModelResponseのpayload型やSemantic Result root型には使わない。補助型全体でraw input、
+raw / 未検証value、secretを保存fieldにせず、Narrative / noteはstateやEventの入力権威にしない。
+
+`_copy_exact_sequence`は`type(value) is list`または`type(value) is tuple`だけを受理して新しいtupleへ
+copyし、それ以外のtuple subclass、generator、set、任意IterableはTypeErrorとしてrejectする。
+validator適用後に元のlist / tupleをmutateしても、model / outcomeのtupleへ伝播しない。
+上記Test Firstに列挙した全tuple fieldは、型注釈へこのprivate `BeforeValidator`を適用する。
 
 ~~~python
+from collections.abc import Mapping
+
 class SemanticValidationContext(ContractModel):
     known_entity_ids: frozenset[EntityId]
-    known_fact_subject_ids: frozenset[FactSubjectId]
+    known_npc_ids: frozenset[NpcId]
+    known_fact_subject_ids: frozenset[EntityId]
+    known_resource_ids: frozenset[ResourceId]
+    known_character_ids: frozenset[CharacterId]
+    known_location_ids: frozenset[LocationId]
+    known_clock_ids: frozenset[ClockId]
     facts_by_id: tuple[tuple[FactId, EvidenceFact], ...]
     current_turn_status: Literal["running", "awaiting_player"]
-    publication_visibility: Literal["player_visible"] | NpcId
+    publication_visibility: PublicationVisibility
 
 class AcceptedSemanticResult(ContractModel):
     type: Literal["accepted"]
     value: SemanticResultV1
-    next_status: Literal["running", "awaiting_player"]
+    next_status: Literal["running", "awaiting_player", "aborted"]
 
 class RejectedSemanticResult(ContractModel):
     type: Literal["rejected"]
@@ -2061,67 +2200,328 @@ SemanticValidationOutcome: TypeAlias = Annotated[
 ]
 SEMANTIC_OUTCOME_ADAPTER = TypeAdapter(SemanticValidationOutcome)
 
-def normalize_evidence_claim(input_value: object) -> EvidenceClaim: ...
-def validate_semantic_result(input_value: object, context: SemanticValidationContext) -> SemanticValidationOutcome: ...
-def materialize_semantic_result_for_test(result: SemanticResultV1, context: FixtureEventContext) -> tuple[DomainEvent, ...]: ...
+RawSemanticResultInput: TypeAlias = Mapping[str, object] | SemanticResultV1
+~~~
+
+`validate_semantic_result`のroot入口はraw JSON mapping/objectであり、rootを
+`FrozenJsonValue`（tuple-of-pairs）へ先にmaterializeしない。最初に
+`SEMANTIC_RESULT_ADAPTER.validate_python(input_value)`でSchemaを検証し、validation failureは
+Pydantic `ValidationError`を外へ漏らさず、sanitized `ValidationIssue`だけを持つ
+`RejectedSemanticResult`へ変換する。Schema-valid後のcontrol判定は次表で一意に固定する。
+`proposals`は`proposed_events`または`proposed_facts`のいずれかが1件以上であることを表し、
+proposalをcontrolとの衝突時に黙って捨てない。
+
+| `current_turn_status` | `clarification_request` | `rejection` | `proposals` | 固定する結果 |
+|---|---:|---:|---:|---|
+| `running` | なし | なし | なし | `AcceptedSemanticResult`, `next_status="running"`（通常result） |
+| `running` | なし | なし | あり | `AcceptedSemanticResult`, `next_status="running"`（全Proposalを保持） |
+| `running` | あり | なし | なし | `AcceptedSemanticResult`, `next_status="awaiting_player"`（clarification-only） |
+| `running` | なし | あり | なし | `AcceptedSemanticResult`, `next_status=rejection.next_status`（valid rejection-only） |
+| `running` | あり | なし | あり | `RejectedSemanticResult`, `code="conflicting_control_fields"` |
+| `running` | なし | あり | あり | `RejectedSemanticResult`, `code="conflicting_control_fields"` |
+| `running` | あり | あり | なし | `RejectedSemanticResult`, `code="conflicting_control_fields"` |
+| `running` | あり | あり | あり | `RejectedSemanticResult`, `code="conflicting_control_fields"` |
+| `awaiting_player` | なし | なし | なし | `AcceptedSemanticResult`, `next_status="running"`（通常result） |
+| `awaiting_player` | なし | なし | あり | `AcceptedSemanticResult`, `next_status="running"`（全Proposalを保持） |
+| `awaiting_player` | あり | なし | なし | `AcceptedSemanticResult`, `next_status="awaiting_player"`（clarification-only） |
+| `awaiting_player` | なし | あり | なし | `AcceptedSemanticResult`, `next_status=rejection.next_status`（valid rejection-only） |
+| `awaiting_player` | あり | なし | あり | `RejectedSemanticResult`, `code="conflicting_control_fields"` |
+| `awaiting_player` | なし | あり | あり | `RejectedSemanticResult`, `code="conflicting_control_fields"` |
+| `awaiting_player` | あり | あり | なし | `RejectedSemanticResult`, `code="conflicting_control_fields"` |
+| `awaiting_player` | あり | あり | あり | `RejectedSemanticResult`, `code="conflicting_control_fields"` |
+
+Schema、Proposal grammar、対応集合、Evidence、duplicate、contextのいずれかのvalidation
+failureはcontrolの有無にかかわらず次のstatusを固定する。`current_turn_status="running"`
+では`RejectedSemanticResult.next_status="aborted"`、`current_turn_status="awaiting_player"`
+では`RejectedSemanticResult.next_status="awaiting_player"`とする。validな`Rejection`だけは
+validation failureへ変換せず、上表のAccepted outcomeとして`Rejection.next_status`を使う。
+
+`SemanticValidationContext.facts_by_id`は重複しないtuple keyを持ち、各`key`が対応する
+`FactRecord.fact_id`と完全一致しなければcontext自体をrejectする。`known_npc_ids`は次の全てに
+使う: `Visibility`のNpcId、`FactHolder`のNpcId、`ProvisionalDetail`（`kind="npc"`または
+`id`がNpcId grammarを持つNPC対象）、その他のNPC対象ID。`ProvisionalDetail.kind="npc"`なら
+`id`はNpcIdでなければならず、全てのNpcIdがknown_npc_idsへlookupされる。未知のNpcIdは
+`publication_visibility`を含めて`unknown_entity`または`invalid_result`のsanitized issueにする。
+
+可視性は推測せず次表の完全一致で判定する。`player_visible`はplayer公開、`gm_only`は公開不可、
+`npc:X`は`publication_visibility="npc:X"`のときだけ可視である。対象外の`npc:Y`は可視な別NPC
+情報として`unrelated_visible_fact`でrejectし、黙ってfilterしない。
+
+| `publication_visibility` | 許可する `Visibility` |
+|---|---|
+| `player_visible` | `player_visible`だけ |
+| `npc:X` | `npc:X`だけ |
+| いずれも | `gm_only`は不可、`npc:Y (Y != X)`は`unrelated_visible_fact` |
+
+EvidenceのFact lookupは`facts_by_id`のkey、`FactRecord.fact_id`、publication visibility、
+`predicate`、leaf `value`のdeep equalを全て検証する。`FactHolder`、`ProvisionalDetail`、
+`Visibility`に現れるNpcIdは、公開先判定の前に`known_npc_ids`へ照合する。
+
+~~~python
+def validate_semantic_result(
+    input_value: RawSemanticResultInput,
+    context: SemanticValidationContext,
+) -> SemanticValidationOutcome: ...
+
+# private helper。public exportしない。validate_semantic_resultの内部だけで呼ぶ。
+def _normalize_evidence_claim(input_value: object) -> EvidenceClaim: ...
+
+`_normalize_evidence_claim`は`validate_semantic_result`内部のEvidence loopからだけ呼び、公開export
+しない。helperまたはroot / nested adapterがraiseするPydantic `ValidationError`は同じvalidatorの
+sanitization boundaryで捕捉し、Error objectやexception textをOutcome / logへ渡さない。
+
+# tests/contracts/supportだけに置くtest-only型。production module / exportには置かない。
+class FixtureEventContext(ContractModel):
+    campaign: CampaignId
+    session: SessionId
+    scene: SceneId
+    turn: TurnId
+    sequence_start: PositiveStrictInt
+    occurred_at: OccurredAt
+    origin: Literal["in_world", "table_correction"]
+    visibility: Visibility
+
+def materialize_semantic_result_for_test(
+    result: AcceptedSemanticResult,
+    context: FixtureEventContext,
+) -> tuple[DomainEvent, ...]: ...
 
 class TurnPostRequest(ContractModel):
     type: Literal["turn_post"]
     turn_request_id: TurnRequestId
     input_text: str
 
-class TransportFrame(ContractModel):
-    type: Literal["semantic_result", "narrative", "done"]
+type JsonValue = FrozenJsonValue
+
+class SemanticResultFrame(ContractModel):
+    type: Literal["semantic_result"]
     data: JsonValue
 
-def build_buffered_response(result: SemanticResultV1) -> tuple[TransportFrame, ...]: ...
-def build_sse_frames(result: SemanticResultV1) -> tuple[TransportFrame, ...]: ...
+class NarrativeFrame(ContractModel):
+    type: Literal["narrative"]
+    data: str
+
+class DoneFrame(ContractModel):
+    type: Literal["done"]
+    data: Literal["running", "awaiting_player", "aborted"]
+
+TransportFrame: TypeAlias = Annotated[
+    SemanticResultFrame | NarrativeFrame | DoneFrame,
+    Field(discriminator="type"),
+]
+
+def build_buffered_response(result: AcceptedSemanticResult) -> tuple[TransportFrame, ...]: ...
+def build_sse_frames(result: AcceptedSemanticResult) -> tuple[TransportFrame, ...]: ...
 ~~~
 
-materializeはtests/contracts/supportだけに置き、production Turn Engineではない。
-build_buffered_responseとbuild_sse_framesはvalidated SemanticResultを受け取った後のpure
-contractであり、FastAPI endpoint、SSE connection、Browser、retryを作らない。SSEでもbuffered
-でもsemantic_result frameを先に置き、検証前Narrativeを送信しない。両形式の終端payloadは
-同一である。
+`SemanticResultV1.rejection`が入力としてSchema-validなら、それはvalidation failureではなく
+`AcceptedSemanticResult.value`の一部である。`AcceptedSemanticResult.next_status`は
+`running` / `awaiting_player` / `aborted`を許可し、`RejectedSemanticResult`は入力契約違反に
+限り、`awaiting_player` / `aborted`だけを許可する。`clarification_request`とvalidな`rejection`
+の同時指定、Proposalのgrammar違反、範囲外のProposalRef、対応集合にないID、duplicate proposal、
+Evidenceのunknown / invisible / unrelated-visible / claim mismatchはRejected outcomeにする。
+一方、validなrejectionはRejected outcomeへ変換しない。
+
+`known_entity_ids`、`known_npc_ids`、`known_resource_ids`、`known_character_ids`、
+`known_location_ids`、`known_clock_ids`、`known_fact_subject_ids`をそれぞれ使い、Proposalの
+grammarだけでなくresource / character / location / clock / subject / NPCの対応集合を検証する。
+`facts_by_id`はtuple keyの一意性とkey == `FactRecord.fact_id`を確認し、FactRecordの存在、
+publication visibility、claimのpredicate/value deep equalを検証する。自由文の含意判定はしない。
+
+`materialize_semantic_result_for_test`は`tests/contracts/support/materialize_proposed_events.py`に
+だけ置く。受け取るのはvalidな`AcceptedSemanticResult`とtest-only `FixtureEventContext`であり、
+`result.value.proposed_events` / `proposed_facts`を一対一のDomainEventへ変換する。validなrejection、
+注釈配列、NarrativeからEventを作らない。production `semantic_result.py`からtest-only型・helperを
+exportしない。
+
+materializerの入力順とenvelopeは次で固定する。0-based `ordinal`は、まず
+`proposed_events`をsource orderで、続いて`proposed_facts`をsource orderで連結した配列のindexと
+する。各Eventの`sequence`は`context.sequence_start + ordinal`、`event_id`は
+`event:fixture-{sequence}`とし、`event_id` grammarに適合し、生成tuple内でuniqueであることを
+検証する。この`ordinal`はsequenceとevent IDの決定だけに使い、Fact ID導出へ渡さない。外部時刻、
+random、UUIDは使わず、test-only deterministic生成とする。
+
+| Semantic proposal | 既存DomainEvent payload | envelope `type` | envelope `visibility` |
+|---|---|---|---|
+| `ProposedResourceChanged` | その`ResourceChangedPayload`をfield-for-fieldで渡す | `ResourceChanged` | `context.visibility` |
+| `ProposedCharacterMoved` | その`CharacterMovedPayload`をfield-for-fieldで渡す | `CharacterMoved` | `context.visibility` |
+| `ProposedClockAdvanced` | その`ClockAdvancedPayload`をfield-for-fieldで渡す | `ClockAdvanced` | `context.visibility` |
+| `ProposedFact` | 1件につき1件の`FactAssertedPayload(kind, holder, subject_id, predicate, value)`へ写像する | `FactAsserted` | `ProposedFact.visibility` |
+
+全Eventの`event_version=1`、`campaign_id`、`session_id`、`scene_id`、`turn_id`、`occurred_at`、
+`origin`はcontextから供給する。Fact以外はcontext visibilityを使い、FactAssertedだけは
+`ProposedFact.visibility`を使う。各`ProposedFact`は対応する`FactAsserted` DomainEventを1件だけ
+生成し、P0-03 ProjectionがFactRecordを作るときは既存の`derive_fact_id(event_id, 0)`へ委譲する。
+連結配列の`ordinal`をFact ID導出へ渡さず、独自のFact ID生成も作らない。複数Factはそれぞれ異なる
+`event_id`を持つため、同じordinal `0`を使ってもFact IDは一意になる。fixtureでのstandalone
+canonical testは`sequence_start=1`を使い、fragment testは各fragmentの`event:fixture-<sequence>`列を
+prefix連結して連番・Event ID・Fact IDのuniqueを検証する。generated tuple全体が同じinputから同じ
+outputになることを確認する。
+
+transportのbuilderはraw `SemanticResultV1`を受け取らず、必ず`AcceptedSemanticResult`を受け取る。
+両builderのframe列は`semantic_result` → `narrative` → `done`の順で、semantic_resultは
+`AcceptedSemanticResult.value`のcanonical frozen JSON、narrativeはそのNarrative、doneの`data`は
+正確に`next_status`とする。検証前のNarrativeは送信しない。`JsonValue = FrozenJsonValue`は内部の
+immutable表現であり、実SSE / HTTP endpointのwire型でもendpoint実装でもない。`TurnPostRequest.input_text`
+はrequest boundaryの一時入力であり、result、issue、Event、frame、通常logへrawのまま保持しない。
 
 proposed_eventsとproposed_factsだけが状態変更Proposalの宣言配列である。Ruling、knowledge、
 visibilityは注釈であり別Eventの源ではない。lifecycle Event、DiceRolled、FactSuperseded、
 TurnRevertedはwhitelist外。同じProposal、範囲外ProposalRef、type不一致、二重materializeは
-rejectする。clarificationとrejectionは同時指定できない。Evidenceは存在、公開先からの
-可視性、structured predicate/value deep equalを検証し、自由文の含意判定をしない。
-narrative、narrative_plan、suggested_actions、mentioned_detailsからEventを生成しない。
+rejectする。narrative、narrative_plan、suggested_actions、mentioned_detailsからEventを生成しない。
 
 ### 10.4 Test First、RED / Green
 
-- [ ] valid、unknown field / version、invalid Event、invisible / unknown / unrelated-visible /
-  claim mismatch Evidenceを最初のREDとして書く。
+- [ ] validな`SemanticResultV1.rejection`がvalidation failureにならず、
+  `AcceptedSemanticResult`として`awaiting_player`または`aborted`へ進むtestを書く。
+- [ ] §10.3の16行のdecision tableをcurrent statusごとに全てtestし、normal result、
+  clarification-only、valid rejection-only、clarification+proposal、rejection+proposal、
+  clarification+rejection、control同居、validation failureの結果と`next_status`を固定する。
+  controlとProposalの同居は`conflicting_control_fields`でrejectし、Proposalを捨てない。
+- [ ] unknown field / version、invalid Event / Fact grammar、対応集合にないresource / character /
+  location / clock / subject、invalid ProposalRefをRejected outcomeとして最初のREDに書く。
+- [ ] invisible / unknown / unrelated-visible / claim mismatch Evidenceを限定codeでrejectする。
+  `known_npc_ids`をVisibilityのNpcId、FactHolderのNpcId、`ProvisionalDetail.id`を含む全NPC対象へ
+  適用し、未知NPCと対象外NPCを受理しない。`facts_by_id`のduplicate keyとkey / fact_id不一致も
+  rejectする。
 - [ ] Narrativeを変更してもproposed_eventsが空ならEvent 0件であるtestを書く。
-- [ ] SemanticResultのmutation、extra field、string number、再validationをrejectする。
-- [ ] duplicate resource、duplicate fact、duplicate materializationを期待codeでrejectする。
-- [ ] materializeのProposal件数とEvent件数を一対一にし、注釈配列を増やしてもEvent件数が
-  増えないことをPASSさせる。
-- [ ] clarification / rejectionはEvent proposalを空にし、awaiting_player / abortedへ遷移。
-- [ ] transport testでvalidated semantic_resultがSSE / bufferedの両方の先頭に現れ、検証前
-  Narrativeが送信されず、同じresultから同じ終端payloadになることを確認する。
-- [ ] 次を実行し、module/export不在の初回REDと最小実装後Greenを記録する。
+- [ ] SemanticResultと全補助型のextra field、string number、mutation、再validationをrejectする。
+- [ ] exact list / tuple validatorの対象fieldを全て列挙してtestする。対象は
+  `SemanticResultV1.rulings`、`proposed_events`、`proposed_facts`、`knowledge_changes`、
+  `visibility_changes`、`narrative_plan`、`mentioned_details`、`evidence`、`suggested_actions`、
+  `Ruling.rule_refs`、`facts_used`、`proposed_effects`、`SemanticValidationContext.facts_by_id`。
+  組み込みlist / tupleだけをcopyし、tuple subclass、generator、set、任意Iterableをrejectする。
+  入力list / tupleを検証後にmutateしてもmodel / outcomeへ伝播しないことを確認する。
+- [ ] root objectはraw mapping/objectを入口にし、tuple-of-pairsの`FrozenJsonValue`を
+  `SEMANTIC_RESULT_ADAPTER`へ直接渡す経路をrejectする。JSON object / arrayのkey、array順、scalar型を
+  losslessに保ったままadapterへ渡し、leaf / transport内部以外で`FrozenJsonValue`をrootに使わない。
+- [ ] `ValidationIssue`のpath / code / message、Rejected outcomeのissue列がsanitizedで、raw input /
+  raw value / secret sentinel / Pydantic raw error reprを保持しないことをtestする。
+- [ ] `_normalize_evidence_claim`をprivate呼び出しに限定し、Pydantic `ValidationError`を外へ漏らさず、
+  sanitized `ValidationIssue`だけのRejected outcomeを返す。Error / Outcome / logにsecret、raw input /
+  value、URL、raw pathを保存しない。
+- [ ] duplicate resource / fact / proposal / materializationを`duplicate_proposal`でrejectする。
+- [ ] materializeは`AcceptedSemanticResult`だけを受け、`sequence_start=1`を許可し、
+  `sequence=sequence_start+ordinal`、`event:fixture-{sequence}`、生成tuple内unique、
+  deterministic、standalone / fragmentのprefix連結をtestする。各`ProposedFact`から
+  `FactAsserted` DomainEventを1件だけ生成し、Proposal件数とEvent件数を一対一にする。
+  注釈配列を増やしてもEvent件数が増えないことをPASSさせる。生成EventをP0-03
+  `minimal-session.v1.json`で確立したparser / `rebuild_projection`経路へ通し、各FactRecord.fact_idが
+  `derive_fact_id(event_id, 0)`と一致すること、
+  複数Factの異なる`event_id`からFact IDが一意になることを確認する。さらにそのProjectionの
+  FactRecordを`facts_by_id` fixtureへ渡し、対応するEvidence claimがAcceptedになることを確認する。
+- [ ] clarification-onlyはProposalなしでAccepted / awaiting_player、controlとProposalの同居は
+  Rejected / conflicting_control_fields、valid rejection-onlyはAccepted / Rejection.next_statusとする。
+- [ ] `FixtureEventContext`とmaterializerが`tests/contracts/support`だけにあり、production
+  `semantic_result.py`のexportに現れないことを確認する。
+- [ ] transport testでvalidated `AcceptedSemanticResult`からSSE / bufferedの両方に
+  `semantic_result` → `narrative` → `done`が現れ、検証前Narrativeが送信されず、done dataが
+  `next_status`と一致することを確認する。
+- [ ] `tests/fixtures/semantic-results/**`とfocused testsを先に追加した別シェルでREDを実行する。
+  REDはproduction module未着地による`ModuleNotFoundError`だけを期待し、pytestのexit=1を記録した
+  まま明示的に終了する。file not found、SyntaxError、collection error、0 tests、unexpected pass、
+  ImportErrorなどはFAILとする。production module着地後の別シェルでGreenを実行し、REDを再実行せず
+  focused testsをexit=0で確認する。
 
 ~~~powershell
-& $neontofPython -m pytest tests/contracts/test_semantic_result.py tests/contracts/test_transport.py -q
+# RED: 別のfresh PowerShell。fixtures / focused tests追加済み、production module着地前。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { Write-Error "repository root resolution failed with exit $repoRootExit."; exit 1 }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { Write-Error "missing .venv/Scripts/python.exe."; exit 1 }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$redOutput = & $pythonExe -m pytest tests/contracts/test_semantic_result.py tests/contracts/test_transport.py -q 2>&1
+$redExit = $LASTEXITCODE
+$redOutput
+$redText = [string]::Join([Environment]::NewLine, [string[]]$redOutput)
+if ($redExit -eq 0) { Write-Error "RED unexpected pass; FAIL."; exit 1 }
+if ($redExit -ne 1) { Write-Error "RED expected pytest exit 1, got $redExit; FAIL."; exit 1 }
+if ($redText -notmatch '(?m)^\s*E\s+ModuleNotFoundError:') { Write-Error "RED was not ModuleNotFoundError-only; FAIL."; exit 1 }
+$redExceptionLines = @($redText -split "`r?`n" | Where-Object { $_ -match '^\s*E\s+[A-Za-z_][A-Za-z0-9_]*Error:' })
+if ($redExceptionLines.Count -eq 0 -or @($redExceptionLines | Where-Object { $_ -notmatch '^\s*E\s+ModuleNotFoundError:' }).Count -ne 0) {
+    Write-Error 'RED contained an exception other than ModuleNotFoundError; FAIL.'
+    exit 1
+}
+if ($redText -match '(?i)ImportError|cannot import name') { Write-Error "RED contained ImportError; FAIL."; exit 1 }
+foreach ($badRedPattern in @('(?i)file not found', '(?i)no such file', 'FileNotFoundError', 'SyntaxError', '(?i)ERROR collecting', '(?i)collection error', '(?i)collected 0', '(?i)no tests ran')) {
+    if ($redText -match $badRedPattern) { Write-Error "RED contains forbidden failure '$badRedPattern'; FAIL."; exit 1 }
+}
+"expected RED: ModuleNotFoundError only; pytest exit=$redExit"
+exit $redExit
+~~~
+
+~~~powershell
+# GREEN: REDとは別のfresh PowerShell。production module着地後。REDは再実行しない。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { Write-Error "repository root resolution failed with exit $repoRootExit."; exit 1 }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { Write-Error "missing .venv/Scripts/python.exe."; exit 1 }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$greenOutput = & $pythonExe -m pytest tests/contracts/test_semantic_result.py tests/contracts/test_transport.py -q 2>&1
+$greenExit = $LASTEXITCODE
+$greenOutput
+if ($greenExit -ne 0) { Write-Error "semantic / transport focused Green failed with exit $greenExit."; exit 1 }
+if ($greenOutput -match '(?i)ModuleNotFoundError|ImportError|file not found|no such file|SyntaxError|collection error|collected 0|no tests ran') {
+    Write-Error 'Green contained a missing-module, file, syntax, collection, or zero-test failure.'
+    exit 1
+}
+"expected Green: focused tests exit=$greenExit"
 ~~~
 
 ### 10.5 実行コマンドと期待結果
 
 ~~~powershell
-$env:PYTHONPATH = (Join-Path (Get-Location) "src")
-& $neontofPython -m pytest tests/contracts/test_semantic_result.py -q
-& $neontofPython -m pytest tests/contracts/test_transport.py -q
-& $neontofPython -m mypy --strict src tests --exclude "tests/typecheck_fixtures"
-rg -n "自由文|Narrative|Authority|公開前|公開後|awaiting_player|aborted|Evidence|duplicate_proposal|proposed_events|proposed_facts|buffer" docs/specs/semantic-result.md src/neontof/contracts
-rg -n "parse_narrative|events_from_narrative|narrative_to_event|state_from_narrative" src/neontof tests --glob "!tests/typecheck_fixtures/**"
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { throw "repository root resolution failed with exit $repoRootExit." }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "missing .venv/Scripts/python.exe." }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$mypyOutput = & $pythonExe -m mypy --strict src tests --exclude "tests/typecheck_fixtures" 2>&1
+$mypyExit = $LASTEXITCODE
+$mypyOutput
+if ($mypyExit -ne 0) { throw "mypy failed with exit $mypyExit." }
+
+$requiredRgTerms = @(
+    "AcceptedSemanticResult", "RejectedSemanticResult", "SemanticValidationContext", "known_npc_ids",
+    "facts_by_id", "conflicting_control_fields", "_normalize_evidence_claim", "proposed_events",
+    "proposed_facts", "materialize_semantic_result_for_test", "sequence_start", "event:fixture-",
+    "FactAsserted", "derive_fact_id(event_id, 0)", "rebuild_projection", "FactRecord.fact_id",
+    "player_visible", "gm_only", "npc:", "clarification_request", "rejection"
+)
+foreach ($term in $requiredRgTerms) {
+    $termHits = @(rg -n --fixed-strings -- $term docs/specs/semantic-result.md src/neontof/contracts tests/contracts/support)
+    $termExit = $LASTEXITCODE
+    $termHits
+    if ($termExit -ne 0) { throw "required rg term '$term' failed with exit $termExit." }
+}
+$forbiddenRgPatterns = @(
+    "def normalize_evidence_claim(", "payload: FrozenJsonValue", "strict=False",
+    "publication_visibility.py"
+)
+foreach ($pattern in $forbiddenRgPatterns) {
+    $forbiddenHits = @(rg -n --fixed-strings -- $pattern src/neontof tests docs/specs/semantic-result.md)
+    $forbiddenExit = $LASTEXITCODE
+    if ($forbiddenExit -eq 0) { $forbiddenHits; throw "forbidden rg hit '$pattern'." }
+    if ($forbiddenExit -ne 1) { throw "forbidden rg failed for '$pattern' with exit $forbiddenExit." }
+}
 ~~~
 
-PASSはvalid accepted、Evidence / duplicateの期待code、Narrative-only Event 0、materialize
-一対一、SSE / buffered同値、禁止関数検索0件である。
+PASSはvalid rejectionを含むAccepted outcome、入力契約違反だけのRejected outcome、対応集合と
+Evidence / duplicateの限定code、Narrative-only Event 0、Accepted入力によるmaterialize一対一、
+SSE / bufferedのframe順序とdone data同値、test-only helperのproduction export 0件、禁止関数検索
+0件である。
 
 ### 10.6 Commit boundary、Gate証拠、rollback
 
@@ -2129,8 +2529,20 @@ PASSはvalid accepted、Evidence / duplicateの期待code、Narrative-only Event
 2. feat: PythonのSemantic Result Schemaを追加する
 3. docs: Semantic ResultとNarrativeの契約を分離する
 
-リスクは高い。Gate証拠はAuthority表、Evidence判定、ValidationIssue、duplicate reject、
-Event件数、Narrative-only Event 0、SSE / buffered同値、mutation sabotageとする。
+1のtest commitは`tests/contracts/support/__init__.py`、
+`tests/contracts/support/evaluate_semantic_contract.py`、`tests/contracts/support/materialize_proposed_events.py`、
+`tests/contracts/test_semantic_result.py`、`tests/contracts/test_transport.py`、
+`tests/fixtures/semantic-results/**`だけを対象にする。2のsource commitは
+`src/neontof/contracts/semantic_result.py`と`src/neontof/contracts/transport.py`だけを対象にする。
+3のdocs commitは`docs/specs/semantic-result.md`だけを対象にする。manifest hunkはP0-07後の
+唯一のintegration commitへ送る。
+
+リスクは高い。Gate証拠はAuthority表、Accepted / Rejected outcomeの境界、対応集合、Evidence判定、
+ValidationIssueの限定codeとredaction、duplicate reject、Event件数、Narrative-only Event 0、
+SSE / bufferedのframe順序とdone data、mutation sabotage、raw mapping root、sanitized ValidationError、
+NPC visibility、facts_by_id key一致、P0-03 parser / `rebuild_projection`を通した
+`derive_fact_id(event_id, 0)`、複数FactのFact ID一意性、facts_by_id / Evidence fixture、deterministic
+materializer、manifest integration後の20件集合とする。
 P0-07より先にrevertでき、P0-03は独立して残す。
 
 ---
@@ -2153,14 +2565,22 @@ location、optional speech style、最小Ruleset値、必須Visibility。
 - src/neontof/contracts/character_sheet.py — YAML parse後objectを検証するPydantic modelと
   TypeAdapter。file I/Oは持たない。
 - tests/contracts/test_character_sheet.py — test-only safe_load、valid、duplicate Alias、
-  HP範囲、ID、strict / frozen。
+  HP範囲、ID、Visibility、strict / frozen / revalidation。
 - tests/fixtures/characters/minimal-character.v1.yaml — 日本語名・Aliasを持つcontract fixture。
+- `tests/test_repository_contracts.py` — focused testには含めず、全production source着地後の
+  最終manifest統合commitだけで更新する。
 
 PyYAML==6.0.3はrequirements-dev.inとrequirements.lock.txtにのみ存在するtest/dev-only
 fixture parserである。testだけがyaml.safe_load(fixture_text)を呼び、Pydantic TypeAdapterへ
-objectを渡す。src/neontofにはyaml import、safe_load、YAML filesystem readを置かない。
-fixtureはUTF-8で読み、日本語Name / Aliasをround-tripする。yaml.load、unsafe loader、evalは
-使わない。
+objectを渡す。safe_load後のsequenceはprivate `BeforeValidator`で、`type(value) is list`または
+`type(value) is tuple`だけを新しいtupleへcopyする。tuple subclass、任意Iterable、generator、setは
+受理しない。validator適用後に入力sequenceをmutateしてもmodelへ伝播しない。
+src/neontofにはyaml import、safe_load、YAML filesystem readを置かない。fixtureはUTF-8で読み、
+日本語Name / Aliasをround-tripする。yaml.load、unsafe loader、eval、検証を緩和する設定は使わない。
+上記Test Firstに列挙した全tuple fieldは、型注釈へprivate `BeforeValidator`を適用する。
+
+P0-05で着地させるproduction sourceは`src/neontof/contracts/character_sheet.py`だけである。
+root exportの追加は行わない。production manifestはP0-07まで全て着地した後に一度だけ更新する。
 
 ### 11.3 型とSignature
 
@@ -2199,32 +2619,139 @@ class CharacterSheetV1(ContractModel):
     resource: ResourceState
     initial_items: tuple[InitialItem, ...]
     initial_location_id: LocationId
-    speech_style: SpeechStyle | None
+    visibility: Visibility
+    speech_style: SpeechStyle | None = None
     ruleset: CharacterRuleset
 
 CHARACTER_SHEET_ADAPTER = TypeAdapter(CharacterSheetV1)
+
+# private BeforeValidator。組み込みのlist / tupleそのものだけをtupleへcopyする。
+def _copy_exact_yaml_sequence(value: object) -> object: ...
 ~~~
 
 0 <= hp.current <= hp.max、resourceも同じ、Aliasは空文字と重複禁止、display nameとIDは
-分離する。strict / extra forbid / frozenで文字列数値coercion、unknown field、mutationを
-rejectする。初期fileの修正で既存Campaign状態を変えず、Campaign開始時のEvent snapshotが権威。
+分離する。`canonical_name`、`aliases`、`id`、`initial_location_id`、item / resource IDはmetadata
+であり、FactまたはtextのVisibilityと混同しない。Character Sheet全体の必須`visibility`が
+初期状態の公開範囲を表す。strict / extra forbid / frozen / `revalidate_instances="always"`で
+文字列数値coercion、unknown field、mutation、再検証時の不正なnested instanceをrejectする。
+初期fileの修正で既存Campaign状態を変えず、Campaign開始時のEvent snapshotが権威である。
+`SpeechStyle`は省略またはnullを許可し、存在する場合だけ全fieldを検証する。
+
+`ResourceState`はP0-03の`Projection.ResourceState`と同名だが、root `contracts.__init__`へ
+再exportしない。利用側は`character_sheet.ResourceState`または`projection.ResourceState`の
+module-qualified参照だけを使い、root exportの衝突を作らない。
 
 ### 11.4 Test First と実行コマンド
 
 - [ ] valid fixtureをyaml.safe_loadで読み、CHARACTER_SHEET_ADAPTER.validate_pythonへ渡す。
-- [ ] ID kind違反、HP超過、負値、duplicate Alias、unknown field、string number、frozen mutation
-  をrejectする。
-- [ ] python -m pytest tests/contracts/test_character_sheet.py -qでmodule/export不在のRED、
-  最小Pydantic model後のGreenを記録する。
+- [ ] `visibility`を持つvalid fixture、speech_styleの省略、speech_style=nullをPASSさせる。
+- [ ] exact list / tuple validatorの全対象fieldを列挙してtestする。対象は
+  `SpeechStyle.endings`、`forbidden_patterns`、`CharacterSheetV1.aliases`、
+  `initial_items`、および`InitialItem` / nested modelに将来tuple fieldを追加しないことを確認する。
+  組み込みlist / tupleだけをprivate BeforeValidatorで新しいtupleへcopyし、tuple subclass、
+  generator、set、任意Iterableはrejectする。検証後の入力list / tuple mutationがmodelへ伝播しない
+  こともtestする。
+- [ ] ID kind違反、HP超過、負値、duplicate Alias、unknown field、string number、frozen mutation、
+  nested instanceの再validation違反をrejectする。
+- [ ] canonical_name / aliases / IDをmetadataとして扱い、Fact / text Visibilityの検証へ混ぜない。
+- [ ] `character_sheet.ResourceState`はmodule-qualified参照だけで、root exportの
+  `projection.ResourceState`衝突を起こさないことをfocused contract testで確認する。
+- [ ] `tests/fixtures/characters/minimal-character.v1.yaml`とfocused testを先に追加した別シェルで
+  REDを実行する。REDはproduction module未着地による`ModuleNotFoundError`だけを期待し、pytestの
+  exit=1を記録したまま明示的に終了する。file not found、SyntaxError、collection error、0 tests、
+  unexpected pass、ImportErrorなどはFAILとする。production module着地後の別シェルでGreenを実行し、
+  REDを再実行せずfocused testをexit=0で確認する。
 - [ ] 日本語Name / AliasのUTF-8 round-tripをPASSさせる。
 - [ ] src/neontofのyaml / safe_load検索が0件である。
 
 ~~~powershell
-$env:PYTHONPATH = (Join-Path (Get-Location) "src")
-& $neontofPython -m pytest tests/contracts/test_character_sheet.py -q
-& $neontofPython -m mypy --strict src tests --exclude "tests/typecheck_fixtures"
-rg -n "Character ID|Aliases|HP|Resource|Initial Items|Initial Location|Speech Style|Ruleset|visibility" docs/specs/character-sheet.md src/neontof/contracts tests/contracts
-rg -n "yaml|safe_load" src/neontof
+# RED: 別のfresh PowerShell。fixture / focused test追加済み、production module着地前。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { Write-Error "repository root resolution failed with exit $repoRootExit."; exit 1 }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { Write-Error "missing .venv/Scripts/python.exe."; exit 1 }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$redOutput = & $pythonExe -m pytest tests/contracts/test_character_sheet.py -q 2>&1
+$redExit = $LASTEXITCODE
+$redOutput
+$redText = [string]::Join([Environment]::NewLine, [string[]]$redOutput)
+if ($redExit -eq 0) { Write-Error "RED unexpected pass; FAIL."; exit 1 }
+if ($redExit -ne 1) { Write-Error "RED expected pytest exit 1, got $redExit; FAIL."; exit 1 }
+if ($redText -notmatch '(?m)^\s*E\s+ModuleNotFoundError:') { Write-Error "RED was not ModuleNotFoundError-only; FAIL."; exit 1 }
+$redExceptionLines = @($redText -split "`r?`n" | Where-Object { $_ -match '^\s*E\s+[A-Za-z_][A-Za-z0-9_]*Error:' })
+if ($redExceptionLines.Count -eq 0 -or @($redExceptionLines | Where-Object { $_ -notmatch '^\s*E\s+ModuleNotFoundError:' }).Count -ne 0) {
+    Write-Error 'RED contained an exception other than ModuleNotFoundError; FAIL.'
+    exit 1
+}
+if ($redText -match '(?i)ImportError|cannot import name') { Write-Error "RED contained ImportError; FAIL."; exit 1 }
+foreach ($badRedPattern in @('(?i)file not found', '(?i)no such file', 'FileNotFoundError', 'SyntaxError', '(?i)ERROR collecting', '(?i)collection error', '(?i)collected 0', '(?i)no tests ran')) {
+    if ($redText -match $badRedPattern) { Write-Error "RED contains forbidden failure '$badRedPattern'; FAIL."; exit 1 }
+}
+"expected RED: ModuleNotFoundError only; pytest exit=$redExit"
+exit $redExit
+
+~~~
+
+~~~powershell
+# GREEN: REDとは別のfresh PowerShell。production module着地後。REDは再実行しない。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { Write-Error "repository root resolution failed with exit $repoRootExit."; exit 1 }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { Write-Error "missing .venv/Scripts/python.exe."; exit 1 }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$greenOutput = & $pythonExe -m pytest tests/contracts/test_character_sheet.py -q 2>&1
+$greenExit = $LASTEXITCODE
+$greenOutput
+if ($greenExit -ne 0) { Write-Error "character sheet focused Green failed with exit $greenExit."; exit 1 }
+if ($greenOutput -match '(?i)ModuleNotFoundError|ImportError|file not found|no such file|SyntaxError|collection error|collected 0|no tests ran') {
+    Write-Error 'Green contained a missing-module, file, syntax, collection, or zero-test failure.'
+    exit 1
+}
+"expected Green: focused test exit=$greenExit"
+~~~
+
+~~~powershell
+# Green後の型・required語・forbidden語チェック。REDは再実行しない。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { throw "repository root resolution failed with exit $repoRootExit." }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "missing .venv/Scripts/python.exe." }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$mypyOutput = & $pythonExe -m mypy --strict src tests --exclude "tests/typecheck_fixtures" 2>&1
+$mypyExit = $LASTEXITCODE
+$mypyOutput
+if ($mypyExit -ne 0) { throw "mypy failed with exit $mypyExit." }
+
+$requiredRgTerms = @(
+    "CharacterSheetV1", "CHARACTER_SHEET_ADAPTER", "SpeechStyle", "endings", "forbidden_patterns",
+    "initial_items", "_copy_exact_yaml_sequence", "BeforeValidator", "visibility", "ResourceState",
+    "strict", "extra", "frozen", "revalidate_instances", "tuple subclass", "generator", "set"
+)
+foreach ($term in $requiredRgTerms) {
+    $termHits = @(rg -n --fixed-strings -- $term docs/specs/character-sheet.md src/neontof/contracts/character_sheet.py tests/contracts/test_character_sheet.py)
+    $termExit = $LASTEXITCODE
+    $termHits
+    if ($termExit -ne 0) { throw "required rg term '$term' failed with exit $termExit." }
+}
+$forbiddenRgPatterns = @("yaml", "safe_load", "strict=False", "publication_visibility.py")
+foreach ($pattern in $forbiddenRgPatterns) {
+    $forbiddenHits = @(rg -ni --fixed-strings -- $pattern src/neontof/contracts/character_sheet.py)
+    $forbiddenExit = $LASTEXITCODE
+    if ($forbiddenExit -eq 0) { $forbiddenHits; throw "forbidden rg hit '$pattern'." }
+    if ($forbiddenExit -ne 1) { throw "forbidden rg failed for '$pattern' with exit $forbiddenExit." }
+}
 ~~~
 
 ### 11.5 Commit boundary、Gate証拠、rollback
@@ -2233,8 +2760,16 @@ rg -n "yaml|safe_load" src/neontof
 2. feat: 手書きCharacter SheetのPydantic Schemaを追加する
 3. docs: Character Sheetの単一形式とYAML境界を定義する
 
-Gate証拠はPyYAML=6.0.3、safe_load=utf8_and_mapping_pass、valid / invalid fixture、
-field path、strict / frozen sabotage、日本語round-trip、src YAML I/O検索0件とする。
+1のtest commitは`tests/contracts/test_character_sheet.py`と
+`tests/fixtures/characters/minimal-character.v1.yaml`だけを対象にする。2のsource commitは
+`src/neontof/contracts/character_sheet.py`だけを対象にする。3のdocs commitは
+`docs/specs/character-sheet.md`だけを対象にする。`tests/test_repository_contracts.py`のmanifest
+hunkはP0-07後の唯一の統合manifest commitへ送る。
+
+Gate証拠はPyYAML=6.0.3、safe_load=utf8_and_mapping_pass、exact list / tupleのprivate
+BeforeValidatorと任意Iterable拒否、valid / invalid fixture、field path、required Visibility、
+speech_styleの省略/null、module-qualified ResourceState、strict / frozen / revalidation sabotage、
+日本語round-trip、src YAML I/O検索0件、exact sequence対象全field、入力mutation非伝播とする。
 
 ---
 
@@ -2257,21 +2792,35 @@ Director、production YAML loader、Context Builder。
 - src/neontof/contracts/scenario.py — 一形式だけのPydantic modelとTypeAdapter。file I/Oなし。
 - tests/contracts/support/validate_scenario_publication.py — test-only Visibility oracle。
 - tests/contracts/test_scenario.py — count、ID reference、secret visibility、end conditions、
-  required Visibility、strict / frozen。
+  required Visibility、strict / frozen / revalidation。
 - tests/fixtures/scenarios/minimal-scenario.v1.yaml — 4 locations、3 NPCs、secret 1、clues 3、
   clock 1のsynthetic fixture。
 - tests/fixtures/scenarios/missing-objective-visibility.v1.yaml
 - tests/fixtures/scenarios/missing-npc-goal-visibility.v1.yaml
 - tests/fixtures/scenarios/missing-end-condition-visibility.v1.yaml
 - tests/fixtures/scenarios/gm-only-player-publication.v1.yaml
+- `tests/test_repository_contracts.py` — focused testには含めず、全production source着地後の
+  最終manifest統合commitだけで更新する。
 
 PyYAML==6.0.3はdev/test-onlyである。testがyaml.safe_loadでUTF-8 YAMLをobjectへ読み、
 SCENARIO_ADAPTER.validate_pythonへ渡す。src/neontofはYAMLもfilesystemも読まない。全fieldの
-Visibilityを宣言値として検証し、field名、section名、文字列内容から推測しない。
+Visibilityを宣言値として検証し、field名、section名、文字列内容から推測しない。safe_load後の
+sequenceはprivate `BeforeValidator`で、`type(value) is list`または`type(value) is tuple`だけを新しい
+tupleへcopyする。tuple subclass、任意Iterable、generator、setは受理しない。validator適用後に
+入力sequenceをmutateしてもmodelへ伝播しない。検証を緩和する設定は使わず、
+production loaderも作らない。上記Test Firstに列挙した全tuple fieldは、型注釈へprivate
+`BeforeValidator`を適用する。
+
+P0-06で着地させるproduction sourceは`src/neontof/contracts/scenario.py`だけである。
+production loaderや別のmanifest fileは作らない。production manifestはP0-07まで全て着地した
+後に一度だけ更新する。
 
 ### 12.3 型とSignature
 
 ~~~python
+from typing import Self
+from pydantic import model_validator
+
 class ScenarioText(ContractModel):
     text: str
     visibility: Visibility
@@ -2321,12 +2870,14 @@ class ClockDefinition(ContractModel):
 class CluesDiscoveredEndCondition(ContractModel):
     type: Literal["clues_discovered"]
     id: EndConditionId
+    outcome: Literal["success", "failure"]
     clue_ids: tuple[ClueId, ClueId, ClueId]
     visibility: Visibility
 
 class ClockReachedEndCondition(ContractModel):
     type: Literal["clock_reached"]
     id: EndConditionId
+    outcome: Literal["success", "failure"]
     clock_id: ClockId
     value: int
     visibility: Visibility
@@ -2350,35 +2901,197 @@ class ScenarioV1(ContractModel):
     clock: ClockDefinition
     end_conditions: tuple[EndCondition, EndCondition]
 
+    # model_validator(mode="after")でsuccess exactly 1 / failure exactly 1を強制する。
+    # 2件のtupleであってもoutcome重複または欠落はrejectする。
+    @model_validator(mode="after")
+    def _validate_end_condition_outcomes(self) -> Self: ...
+
 SCENARIO_ADAPTER = TypeAdapter(ScenarioV1)
 
-def validate_scenario_publication_for_test(scenario: ScenarioV1, publication_visibility: Literal["player_visible"] | NpcId) -> tuple[ScenarioVisibilityIssue, ...]: ...
+def _copy_exact_yaml_sequence(value: object) -> object: ...
+
+# tests/contracts/support/validate_scenario_publication.pyだけに置くtest-only型。
+ScenarioVisibilityIssueCode: TypeAlias = Literal[
+    "missing_visibility",
+    "invisible_scenario_content",
+    "unknown_npc_visibility",
+]
+
+class ScenarioVisibilityIssue(ContractModel):
+    path: str
+    code: ScenarioVisibilityIssueCode
+    message: str
+
+class PublishedScenarioText(ContractModel):
+    path: str
+    text: str
+    visibility: Visibility
+
+def normalize_missing_visibility_for_test(input_value: object) -> tuple[ScenarioVisibilityIssue, ...]: ...
+
+def validate_scenario_publication_for_test(
+    source: ScenarioV1,
+    publication_visibility: Literal["player_visible"] | NpcId,
+    candidate: Sequence[PublishedScenarioText] | None = None,
+) -> tuple[ScenarioVisibilityIssue, ...]: ...
+
+def project_scenario_public_text_for_test(
+    scenario: ScenarioV1,
+    publication_visibility: Literal["player_visible"] | NpcId,
+) -> tuple[PublishedScenarioText, ...]: ...
 ~~~
 
 object unionのdiscriminatorはtypeを使い、section名から推測しない。Location数4〜6、NPC数3〜4、
 Secret exactly 1、Clue exactly 3、Clock exactly 1。全reference IDは同一file内で解決する。
-Scene.objective、Npc.goal、両End Condition、Location、Knowledge、World Invariant、Secret、
-Clue、Clockなど全初期事実は必須visibilityを持つ。Secretはgm_onlyに限定し、player-visible
-Secretをrejectする。Phase 1 Loaderは宣言済みVisibilityだけをfilterへ渡す。
+Scene.objective、Npc.goal、Npc.knowledge、Location.description、WorldInvariant.statement、
+Secret.text、Clue.text、Clock.label、両End Conditionなど全初期fact / textは必須visibilityを持つ。
+`SecretDefinition.visibility`は`Literal["gm_only"]`に限定し、player-visible Secretをrejectする。
+`canonical_name`、`aliases`、Scenario / Scene / Location / NPC / Secret / Clue / Clock / Invariant /
+EndConditionのID、versionはmetadataであり、fact / textのVisibility fieldではない。metadataの
+名前からVisibilityを推測しない。Phase 1 Loaderは宣言済みVisibilityだけをfilterへ渡す。
+
+`normalize_missing_visibility_for_test`だけがraw fixture mappingを受け、missing fieldによる
+Pydantic errorをraw errorのまま返さず、pathをsanitizedした`missing_visibility` issueへ正規化する。
+これはtyped Scenarioの公開判定を担当しない。`validate_scenario_publication_for_test`はtypedな
+`source: ScenarioV1`を受け、すべてのVisibilityが`player_visible`、`gm_only`、またはscenario内の
+既知NPC IDであることを確認する。`gm_only`はScenario source上の正当なVisibilityであり、sourceに
+存在するだけではrejectしない。未知のNPC IDだけを`unknown_npc_visibility`にする。
+
+任意の`candidate`が渡された場合だけ、candidateの各`PublishedScenarioText.visibility`を
+publication先の完全一致規則で検証する。candidateへ`gm_only`の本文、Secret本文、または対象外
+NPCの本文を混ぜた場合だけ`invisible_scenario_content`でrejectする。candidateなしのsource検証と
+missing_visibility oracleをこの責務へ混ぜない。Issueのpath / code / messageはraw text、raw value、
+Secret、secret sentinelを保持しない。
+
+`project_scenario_public_text_for_test`はvalidなScenarioだけを受け、playerまたは対象NPCへ明示的に
+許可されたtextだけを`PublishedScenarioText`のtupleで返す。`player_visible`はplayer公開、
+`npc:X`は対象`npc:X`公開、`gm_only`は公開不可とし、`Secret`、対象外NPC本文、metadata
+（canonical_name、aliases、ID）はprojectionへ混ぜない。返り値にも元のVisibilityを保持する。
 
 ### 12.4 Test First と実行コマンド
 
 - [ ] valid fixtureをsafe_loadしSCENARIO_ADAPTER.validate_pythonへ渡す。
-- [ ] Location 3件、NPC 5件、Secret visibility変更、unknown reference、missing failure End、
-  unknown field、string number、frozen mutationをrejectする。
-- [ ] objective、goal、success/failure End Condition、各初期事実のVisibilityを検証する。
-  missing-* fixtureはmissing_visibility、gm-only player公開はinvisible_scenario_contentで
-  rejectする。
-- [ ] python -m pytest tests/contracts/test_scenario.py -qでmodule/export不在のREDとGreenを
-  記録する。secret sentinelをpublic subsetへ出さないtestを入れる。
+- [ ] Location 3件、NPC 5件、Secret exactly 1以外、Clue exactly 3以外、Clock exactly 1以外、
+  end condition 2件以外をrejectする。
+- [ ] duplicate IDを各namespaceとreference対象でrejectし、initial_scene.location_id、scene.npc_ids、
+  clue.location_ids、end conditionのclue_ids / clock_idが存在することを検証する。
+- [ ] Secretの`gm_only`を正当なsource Visibilityとして受理し、unknown reference、missing failure
+  End、unknown field、string number、frozen mutation、nested instanceの再validation違反をrejectする。
+- [ ] `outcome`を各EndConditionへ必須化し、ScenarioV1でsuccess exactly 1 / failure exactly 1を
+  強制する。success×2、failure×2、success欠落、failure欠落、outcome欠落をfixture / test / 型 /
+  validator signatureでrejectする。`minimal-scenario.v1.yaml`と全missing / gm-only fixtureは
+  success 1件・failure 1件の`outcome`を持つvalid形へ同期し、重複・欠落fixtureをfocused test内で生成する。
+- [ ] objective、goal、knowledge、Location.description、WorldInvariant.statement、Secret.text、
+  Clue.text、Clock.label、success/failure End Conditionなど全初期fact / textのVisibilityを検証する。
+- [ ] `normalize_missing_visibility_for_test`だけが`missing-*` fixtureをraw mappingとして受け、
+  raw Pydantic errorではなく`missing_visibility`へ正規化する。typed sourceへgm_onlyが存在するだけ
+  ではrejectせず、candidateへgm_only / Secret / 対象外NPC本文を混ぜた場合だけ
+  `invisible_scenario_content`、未知NPCのVisibilityは`unknown_npc_visibility`でrejectする。
+- [ ] `project_scenario_public_text_for_test`がplayer / 対象NPCへ完全一致で許可された本文だけを
+  `PublishedScenarioText`として返し、gm_only / Secret / 対象外NPC本文を除外し、Issueやmetadataへ
+  raw text/value/secretを残さない。candidateあり / なしの責務分離をtestする。
+- [ ] exact list / tuple validatorの全対象fieldを列挙してtestする。対象は
+  `SceneDefinition.npc_ids`、`ScenarioV1.locations`、`npcs`、`world_invariants`、`clues`、
+  `end_conditions`、`NpcDefinition.aliases`、`knowledge`、`ClueDefinition.location_ids`、
+  `CluesDiscoveredEndCondition.clue_ids`。組み込みlist / tupleだけをprivate BeforeValidatorで
+  新しいtupleへcopyし、tuple subclass、generator、set、任意Iterableはrejectする。検証後の入力
+  mutation非伝播も確認する。
+- [ ] `tests/fixtures/scenarios/**`とfocused testを先に追加した別シェルでREDを実行する。REDは
+  production module未着地による`ModuleNotFoundError`だけを期待し、pytestのexit=1を記録したまま
+  明示的に終了する。file not found、SyntaxError、collection error、0 tests、unexpected pass、
+  ImportErrorなどはFAILとする。production module着地後の別シェルでGreenを実行し、REDを再実行せず
+  focused testをexit=0で確認する。secret sentinelをpublic subsetへ出さないtestを入れる。
 - [ ] src/neontofのyaml / safe_load検索が0件である。
 
 ~~~powershell
-$env:PYTHONPATH = (Join-Path (Get-Location) "src")
-& $neontofPython -m pytest tests/contracts/test_scenario.py -q
-& $neontofPython -m mypy --strict src tests --exclude "tests/typecheck_fixtures"
-rg -n "Scenario ID|Version|Initial Scene|Locations|NPC|objective|goal|World Invariants|Secret|Clues|Clock|Success|Failure|visibility|gm_only" docs/specs/scenario-format.md src/neontof/contracts tests/contracts
-rg -n "yaml|safe_load" src/neontof
+# RED: 別のfresh PowerShell。fixtures / focused test追加済み、production module着地前。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { Write-Error "repository root resolution failed with exit $repoRootExit."; exit 1 }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { Write-Error "missing .venv/Scripts/python.exe."; exit 1 }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$redOutput = & $pythonExe -m pytest tests/contracts/test_scenario.py -q 2>&1
+$redExit = $LASTEXITCODE
+$redOutput
+$redText = [string]::Join([Environment]::NewLine, [string[]]$redOutput)
+if ($redExit -eq 0) { Write-Error "RED unexpected pass; FAIL."; exit 1 }
+if ($redExit -ne 1) { Write-Error "RED expected pytest exit 1, got $redExit; FAIL."; exit 1 }
+if ($redText -notmatch '(?m)^\s*E\s+ModuleNotFoundError:') { Write-Error "RED was not ModuleNotFoundError-only; FAIL."; exit 1 }
+$redExceptionLines = @($redText -split "`r?`n" | Where-Object { $_ -match '^\s*E\s+[A-Za-z_][A-Za-z0-9_]*Error:' })
+if ($redExceptionLines.Count -eq 0 -or @($redExceptionLines | Where-Object { $_ -notmatch '^\s*E\s+ModuleNotFoundError:' }).Count -ne 0) {
+    Write-Error 'RED contained an exception other than ModuleNotFoundError; FAIL.'
+    exit 1
+}
+if ($redText -match '(?i)ImportError|cannot import name') { Write-Error "RED contained ImportError; FAIL."; exit 1 }
+foreach ($badRedPattern in @('(?i)file not found', '(?i)no such file', 'FileNotFoundError', 'SyntaxError', '(?i)ERROR collecting', '(?i)collection error', '(?i)collected 0', '(?i)no tests ran')) {
+    if ($redText -match $badRedPattern) { Write-Error "RED contains forbidden failure '$badRedPattern'; FAIL."; exit 1 }
+}
+"expected RED: ModuleNotFoundError only; pytest exit=$redExit"
+exit $redExit
+
+~~~
+
+~~~powershell
+# GREEN: REDとは別のfresh PowerShell。production module着地後。REDは再実行しない。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { Write-Error "repository root resolution failed with exit $repoRootExit."; exit 1 }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { Write-Error "missing .venv/Scripts/python.exe."; exit 1 }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$greenOutput = & $pythonExe -m pytest tests/contracts/test_scenario.py -q 2>&1
+$greenExit = $LASTEXITCODE
+$greenOutput
+if ($greenExit -ne 0) { Write-Error "scenario focused Green failed with exit $greenExit."; exit 1 }
+if ($greenOutput -match '(?i)ModuleNotFoundError|ImportError|file not found|no such file|SyntaxError|collection error|collected 0|no tests ran') {
+    Write-Error 'Green contained a missing-module, file, syntax, collection, or zero-test failure.'
+    exit 1
+}
+"expected Green: focused test exit=$greenExit"
+~~~
+
+~~~powershell
+# Green後の型・required語・forbidden語チェック。REDは再実行しない。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { throw "repository root resolution failed with exit $repoRootExit." }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "missing .venv/Scripts/python.exe." }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$mypyOutput = & $pythonExe -m mypy --strict src tests --exclude "tests/typecheck_fixtures" 2>&1
+$mypyExit = $LASTEXITCODE
+$mypyOutput
+if ($mypyExit -ne 0) { throw "mypy failed with exit $mypyExit." }
+
+$requiredRgTerms = @(
+    "ScenarioV1", "EndCondition", "outcome", "success", "failure", "PublishedScenarioText",
+    "normalize_missing_visibility_for_test", "validate_scenario_publication_for_test",
+    "project_scenario_public_text_for_test", "missing_visibility", "invisible_scenario_content",
+    "unknown_npc_visibility", "gm_only", "candidate", "tuple subclass", "generator", "set"
+)
+foreach ($term in $requiredRgTerms) {
+    $termHits = @(rg -n --fixed-strings -- $term docs/specs/scenario-format.md src/neontof/contracts/scenario.py tests/contracts)
+    $termExit = $LASTEXITCODE
+    $termHits
+    if ($termExit -ne 0) { throw "required rg term '$term' failed with exit $termExit." }
+}
+$forbiddenRgPatterns = @("yaml", "safe_load", "strict=False", "publication_visibility.py")
+foreach ($pattern in $forbiddenRgPatterns) {
+    $forbiddenHits = @(rg -ni --fixed-strings -- $pattern src/neontof/contracts/scenario.py)
+    $forbiddenExit = $LASTEXITCODE
+    if ($forbiddenExit -eq 0) { $forbiddenHits; throw "forbidden rg hit '$pattern'." }
+    if ($forbiddenExit -ne 1) { throw "forbidden rg failed for '$pattern' with exit $forbiddenExit." }
+}
 ~~~
 
 ### 12.5 Commit boundary、Gate証拠、rollback
@@ -2387,8 +3100,17 @@ rg -n "yaml|safe_load" src/neontof
 2. feat: 手書きScenarioのPydantic Schemaを追加する
 3. docs: Scenarioの単一形式と秘密境界を定義する
 
-Gate証拠はrequired Visibility schema、欠落 / gm_only公開のValidationIssue、正常系、
-safe_load evidence、production YAML I/O検索0件とする。P0-05 / P0-04と独立してrevertできる。
+1のtest commitは`tests/contracts/test_scenario.py`、
+`tests/contracts/support/validate_scenario_publication.py`、`tests/fixtures/scenarios/**`だけを対象にする。
+2のsource commitは`src/neontof/contracts/scenario.py`だけを対象にする。3のdocs commitは
+`docs/specs/scenario-format.md`だけを対象にする。`tests/test_repository_contracts.py`のmanifest hunkは
+P0-07後の唯一の統合manifest commitへ送る。
+
+Gate証拠はrequired Visibility schema、missing_visibilityへの安全な正規化、source上のgm_only受理、
+candidate混入時だけのinvisible_scenario_content、unknown_npc_visibility、public projectionの除外、
+success / failure exactly 1、count / reference / duplicate ID、strict / frozen / revalidation sabotage、
+exact list / tupleの全対象field、入力mutation非伝播、正常系、safe_load evidence、production YAML I/O
+検索0件とする。P0-05 / P0-04と独立してrevertでき、manifestは統合時だけ扱う。
 
 ---
 
@@ -2400,49 +3122,57 @@ safe_load evidence、production YAML I/O検索0件とする。P0-05 / P0-04と�
 JSON、同一Fixtureの決定性を表現できるTest Providerを持つ。
 
 **決定する:** provider-neutral request / response、single Callable injection、Fake、Scripted
-step、Recorded Fixture、sanitized call log、公開Context filter、error taxonomy、socket禁止。
+step、Recorded Fixture、sanitized call log、test-only公開Context filter、error taxonomy、socket禁止。
 
 **Non-goal:** 実Provider Adapter、Provider registry、capability negotiation、複数実Provider、
-production retry loop、Turn Engine、raw実Response、OpenAI SDK。
+production Context Builder / visibility filter、Event append、Turn Engine、retry runtime、
+real Provider、OpenAI SDK、raw実Responseも作らない。
 
 ### 13.2 作成ファイルと責務
 
 - docs/specs/test-provider-and-fixtures.md — Fixture version、sanitization、error、call log、
   CI policy、network / API keyなし。
+- src/neontof/model/__init__.py — model contractの最小package exportだけ。Context Builder / filterを
+  所有しない。
 - src/neontof/model/model_invoker.py — narrow Callableとrequest / response model。
-- src/neontof/model/publication_visibility.py — 公開ContextのVisibility filterだけ。
 - src/neontof/model/fake_provider.py — 固定responseまたはerrorのfactory。
 - src/neontof/model/scripted_provider.py — step列とinstance-local call log。
 - src/neontof/model/recorded_fixture.py — sanitized JSON fixture load / validate。networkなし。
+- tests/model/support/filter_context_by_visibility.py — test-only Context / Visibility filter。
 - tests/model/test_fake_provider.py、test_scripted_provider.py、test_recorded_fixture.py、
   test_provider_security.py。
-- tests/model/support/run_invocation_scenario.py、materialize_proposed_events.py — test-only
-  driver / oracle。
+- tests/model/support/run_invocation_scenario.py — test-only driver。P0-04のvalidation oracleと
+  materializerを呼び出し、Semantic Resultの重複helperを作らない。
 - tests/fixtures/providers/normal-turn.v1.json、model-error.v1.json、timeout.v1.json、
   invalid-json.v1.json、retry-then-success.v1.json、sanitized-call-log.v1.json。
+
+P0-07のproduction sourceは上記の`model/__init__.py`、`model_invoker.py`、`fake_provider.py`、
+`scripted_provider.py`、`recorded_fixture.py`だけである。`src/neontof/model/publication_visibility.py`
+は作成予定pathから外し、Context Builder / visibility filterはproduction sourceへ置かない。
+最終production manifestは§14の20相対pathを唯一の正本とする。
 
 ### 13.3 型とSignature
 
 ~~~python
 Role: TypeAlias = Literal["referee", "world_simulator", "npc_actor", "narrator"]
-PublicationVisibility: TypeAlias = Literal["player_visible"] | NpcId
+# PublicationVisibilityはP0-04のaliasを再利用し、P0-07で別定義しない。
 
 class ModelRequest(ContractModel):
     model_call_id: ModelCallId
     turn_id: TurnId
     roles: tuple[Role, ...]
     publication_visibility: PublicationVisibility
-    context: JsonValue
+    context: tuple[FactRecord, ...]
     output_schema: Literal["semantic-result-v1"]
     # API key、secret、credential、SecretStore参照値をfieldに持たない
 
 class ModelUsage(ContractModel):
-    input_tokens: int
-    output_tokens: int
-    cached_tokens: int
+    input_tokens: NonNegativeStrictInt
+    output_tokens: NonNegativeStrictInt
+    cached_tokens: NonNegativeStrictInt
 
 class ModelResponse(ContractModel):
-    payload: JsonValue
+    payload: SemanticResultV1
     usage: ModelUsage
 
 ModelInvoker: TypeAlias = Callable[[ModelRequest], ModelResponse]
@@ -2470,18 +3200,18 @@ ProviderStep: TypeAlias = Annotated[
 PROVIDER_STEP_ADAPTER = TypeAdapter(ProviderStep)
 
 class ProviderCallLogMeta(ContractModel):
-    attempt: int
+    attempt: PositiveStrictInt
     status: Literal["succeeded", "failed", "timed_out", "rejected"]
     usage: ModelUsage | None
-    context_item_count: int
+    context_item_count: NonNegativeStrictInt
     error_code: Literal["model_error", "timeout", "invalid_json", "script_exhausted"] | None
 
 class SanitizedProviderCallLogEntry(ContractModel):
     request_id: ModelCallId
-    attempt: int
+    attempt: PositiveStrictInt
     publication_visibility: PublicationVisibility
-    context_digest: str
-    context_item_count: int
+    context_digest: LowercaseSha256
+    context_item_count: NonNegativeStrictInt
     usage: ModelUsage | None
     status: Literal["succeeded", "failed", "timed_out", "rejected"]
     error_code: Literal["model_error", "timeout", "invalid_json", "script_exhausted"] | None
@@ -2492,70 +3222,208 @@ class RecordedFixtureV1(ContractModel):
     fixture_version: Literal[1]
     name: str
     steps: tuple[ProviderStep, ...]
-    expected_call_count: int
+    expected_call_count: NonNegativeStrictInt
     expected_final_outcome: Literal["success", "model_error", "timeout", "invalid_json"]
     expected_proposed_events: tuple[ProposedEvent, ...]
 
 class TestProvider:
-    def invoke(self, request: ModelRequest) -> ModelResponse: ...
+    def invoke(self, request: ModelRequest) -> ModelResponse: ...  # success stepだけがreturnする
     @property
     def calls(self) -> tuple[SanitizedProviderCallLogEntry, ...]: ...
 
 def create_fake_provider(step: ProviderStep) -> TestProvider: ...
 def create_scripted_provider(steps: Sequence[ProviderStep]) -> TestProvider: ...
-def load_recorded_fixture(source: str) -> RecordedFixtureV1: ...
-def create_recorded_fixture_provider(source: str) -> TestProvider: ...
+def load_recorded_fixture(source: bytes) -> RecordedFixtureV1: ...
+def create_recorded_fixture_provider(source: bytes) -> TestProvider: ...
 def sanitize_provider_call_log(input_request: ModelRequest, meta: ProviderCallLogMeta) -> SanitizedProviderCallLogEntry: ...
-def filter_context_by_visibility(facts: Sequence[FactRecord], publication_visibility: PublicationVisibility) -> tuple[FactRecord, ...]: ...
+
+# tests/model/support/filter_context_by_visibility.pyだけに置くtest-only関数。
+def filter_context_by_visibility(
+    facts: tuple[FactRecord, ...],
+    publication_visibility: PublicationVisibility,
+) -> tuple[FactRecord, ...]: ...
 ~~~
 
 TestProviderはP0-07の観測用具であり、production Provider hierarchyではない。ModelInvokerは
 一つのCallable境界であり、二つ目の実Providerを正当化する抽象階層を作らない。
-ModelRequestにAPI key / secret fieldを作らない。filterはplayer_visibleまたは対象NPCへ明示的
-に可視なFactだけを返し、gm_onlyを返さない。Context Builder、Prompt生成、OpenAI request
-mappingはPhase 1に残す。
+ModelRequestにAPI key / secret fieldを作らない。test-only
+`tests/model/support/filter_context_by_visibility.py`のfilterは、`publication_visibility`と
+FactのVisibilityを完全一致で比較し、playerには`player_visible`だけ、`npc:X`には`npc:X`だけを
+返し、`gm_only`と対象外NPCを返さない。Context Builder、Prompt生成、OpenAI request mappingは
+Phase 1に残す。production sourceへfilter関数やContext Builderを移さない。
+
+fixture loaderはraw fixtureのJSON `bytes`を読み、JSON object / arrayをmapping / listとして
+losslessにdecodeする（duplicate key、array順、scalar型を変形しない）。success stepのpayloadは
+fixture内のpayload JSON bytesを取り出して`SEMANTIC_RESULT_ADAPTER.validate_json(payload_bytes)`へ
+渡し、返った`SemanticResultV1`を`ModelResponse.payload`へ保持する。rootへtuple-of-pairsの
+`FrozenJsonValue`を渡さず、payloadをraw mappingのままModelResponseへ保存しない。
+`InvalidJsonStep`はProviderStepの非success branchであり、成功`ModelResponse`を作らず、driverは
+`invalid_json` / `rejected`のsanitized結果とcall logだけを記録する。
+
+success fixtureの`ModelResponse.payload`はSchema-validな`SemanticResultV1`としてP0-04の
+`SemanticValidationContext`を使う`validate_semantic_result`へ渡し、Accepted outcomeの場合だけ
+`AcceptedSemanticResult`として扱う。`tests/model/support/run_invocation_scenario.py`は、そのaccepted値をP0-04の
+`tests/contracts/support/materialize_proposed_events.py`にある
+`materialize_semantic_result_for_test`へ渡してEvent Sequenceを得る。P0-07に別の
+`materialize_proposed_events.py`、raw `SemanticResultV1` materializer、またはAccepted / Rejected
+outcomeの重複定義を作らない。入力契約違反はP0-04のRejected outcomeとして扱い、providerの
+successへ偽装しない。
 
 sanitize_provider_call_logはmodel_call_id、publication_visibility、canonical JSONのSHA-256
 context_digest、context_item_count、usage、status、error_codeだけを返す。raw ModelRequest、
 context、roles、payload、任意JSON、環境変数、error messageを保持しない。ModelResponse.payload
-をstateへ直接渡さず、SemanticResult adapterを通す。invalid_jsonは成功扱いにしない。
+をstateへ直接渡さず、fixture loaderの`SEMANTIC_RESULT_ADAPTER.validate_json`とP0-04 validation
+oracleを通す。invalid_jsonは成功扱いにしない。token countはNonNegativeStrictInt、attemptは
+PositiveStrictInt、context_digestはLowercaseSha256で検証する。
 
 ### 13.4 Test First、RED / Green
 
-- [ ] fixed success、model error、timeout、invalid JSON、retry-then-success、script exhaustを
-  testに書く。最初のREDはpytest runner起動後のmodule/export不在とする。
+- [ ] fixtures (`tests/fixtures/providers/**`)とfocused testsを先に追加した別シェルでREDを実行する。
+  REDはproduction module未着地による`ModuleNotFoundError`だけを期待し、pytestのexit=1を記録した
+  まま明示的に終了する。file not found、SyntaxError、collection error、0 tests、unexpected pass、
+  ImportErrorなどはFAILとする。production module着地後の別シェルでGreenを実行し、REDを再実行せず
+  focused testsをexit=0で確認する。fixed success、model error、timeout、invalid JSON、retry-then-success、
+  script exhaustをtestに書く。
+- [ ] success fixture loaderがJSON bytesからsuccess payload bytesを取り出し、
+  `SEMANTIC_RESULT_ADAPTER.validate_json`で検証した`SemanticResultV1`だけを
+  `ModelResponse.payload`へ格納する。JSON object / arrayをlosslessに保ち、tuple-of-pairs rootや
+  raw mapping payloadを保存しない。`InvalidJsonStep`は成功`ModelResponse`を作らない。
 - [ ] sanitized call logにrequest、context、任意JSON、API key / secret fieldがないことを
   testする。
-- [ ] gm_only、player_visible、対象外NPC、対象NPCのFactのfilter結果を固定する。
+- [ ] test-only `filter_context_by_visibility.py`でgm_only、player_visible、対象外NPC、対象NPCの
+  Factのfilter結果を完全一致で固定し、production `publication_visibility.py`が存在しないことを
+  testする。
+- [ ] token countはNonNegativeStrictInt、attemptはPositiveStrictInt、context_digestは
+  LowercaseSha256とし、bool、負数、0 attempt、文字列数値、uppercase / short digestをrejectする。
 - [ ] TOP_SECRET_SENTINELはtest memory上だけに注入し、output、captured log、Fixture、
   tests/fixturesへ現れないことを検証する。
-- [ ] call count / order、同一Fixtureから同一validated proposed Event Sequenceをtestする。
+- [ ] call count / order、同一Fixtureから同一`AcceptedSemanticResult`と、P0-04 materializerで
+  同一validated proposed Event Sequenceになることをtestする。
 - [ ] `tests/conftest.py`から全pytest sessionへautouseで
   `tests/support/no_external_network.py`を適用する。socket.socket、socket.create_connection、
   socket.getaddrinfo、http.client、urllib、外部HTTP clientをfail-fastへpatchし、srcの外部
   socket / API使用はpytest全体でFAILにする。P0-07専用testだけの境界にしない。
-- [ ] python -m pytest tests/model -qでmodule missingのRED、3 factory実装後のGreenを記録する。
-- [ ] Narrativeだけを変えてもEvent Sequence不変、proposed_events変更でtest失敗を確認する。
+- [ ] `python -m pytest tests/model -q`のREDは上記の別シェルで、3 factory実装後のGreenは別シェルで
+  記録する。
+- [ ] Narrativeだけを変えてもP0-04 materializerのEvent Sequenceは不変、proposed_events変更で
+  testが失敗することを確認する。
 - [ ] 実Provider、network、.envなしで全testを再実行し、OpenAI SDKをinstallしない。
 
 ### 13.5 実行コマンドと期待結果
 
 ~~~powershell
-Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
-Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
-$env:PYTHONPATH = (Join-Path (Get-Location) "src")
-& $neontofPython -m pytest tests/model -q
-& $neontofPython -m pytest tests/contracts/test_semantic_result.py tests/model/test_recorded_fixture.py -q
-& $neontofPython -m pytest -q
-& $neontofPython -m mypy --strict src tests --exclude "tests/typecheck_fixtures"
-rg -n "sk-[A-Za-z0-9]{20,}|TOP_SECRET_SENTINEL" src/neontof tests/fixtures
-rg -ni "^(from|import) openai|openai" src/neontof
-rg -ni "provider_registry\.py|ProviderRegistry|Capability|Plugin|Hook|Profile" src/neontof
-rg -ni "anthropic|sqlite3\.connect|sqlite3\.Connection|provider_registry" src/neontof
-rg -n "socket\.(socket|create_connection|create_server|getaddrinfo)|http\.client|urllib\.(request|parse)|requests\.|httpx\.(Client|AsyncClient)|urlopen" src/neontof
+# RED: 別のfresh PowerShell。fixtures / focused tests追加済み、production module着地前。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { Write-Error "repository root resolution failed with exit $repoRootExit."; exit 1 }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { Write-Error "missing .venv/Scripts/python.exe."; exit 1 }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$redOutput = & $pythonExe -m pytest tests/model -q 2>&1
+$redExit = $LASTEXITCODE
+$redOutput
+$redText = [string]::Join([Environment]::NewLine, [string[]]$redOutput)
+if ($redExit -eq 0) { Write-Error "RED unexpected pass; FAIL."; exit 1 }
+if ($redExit -ne 1) { Write-Error "RED expected pytest exit 1, got $redExit; FAIL."; exit 1 }
+if ($redText -notmatch '(?m)^\s*E\s+ModuleNotFoundError:') { Write-Error "RED was not ModuleNotFoundError-only; FAIL."; exit 1 }
+$redExceptionLines = @($redText -split "`r?`n" | Where-Object { $_ -match '^\s*E\s+[A-Za-z_][A-Za-z0-9_]*Error:' })
+if ($redExceptionLines.Count -eq 0 -or @($redExceptionLines | Where-Object { $_ -notmatch '^\s*E\s+ModuleNotFoundError:' }).Count -ne 0) {
+    Write-Error 'RED contained an exception other than ModuleNotFoundError; FAIL.'
+    exit 1
+}
+if ($redText -match '(?i)ImportError|cannot import name') { Write-Error "RED contained ImportError; FAIL."; exit 1 }
+foreach ($badRedPattern in @('(?i)file not found', '(?i)no such file', 'FileNotFoundError', 'SyntaxError', '(?i)ERROR collecting', '(?i)collection error', '(?i)collected 0', '(?i)no tests ran')) {
+    if ($redText -match $badRedPattern) { Write-Error "RED contains forbidden failure '$badRedPattern'; FAIL."; exit 1 }
+}
+"expected RED: ModuleNotFoundError only; pytest exit=$redExit"
+exit $redExit
+
 ~~~
 
-PASSはprovider test全成功、retry call count一致、Event Sequence deep equal、sanitized logに
+~~~powershell
+# GREEN: REDとは別のfresh PowerShell。production module着地後。REDは再実行しない。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { Write-Error "repository root resolution failed with exit $repoRootExit."; exit 1 }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { Write-Error "missing .venv/Scripts/python.exe."; exit 1 }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$greenOutput = & $pythonExe -m pytest tests/model -q 2>&1
+$greenExit = $LASTEXITCODE
+$greenOutput
+if ($greenExit -ne 0) { Write-Error "model focused Green failed with exit $greenExit."; exit 1 }
+if ($greenOutput -match '(?i)ModuleNotFoundError|ImportError|file not found|no such file|SyntaxError|collection error|collected 0|no tests ran') {
+    Write-Error 'Green contained a missing-module, file, syntax, collection, or zero-test failure.'
+    exit 1
+}
+"expected Green: focused tests exit=$greenExit"
+~~~
+
+~~~powershell
+# Green後のintegration / type / security checks。REDは再実行しない。
+$repoRootOutput = git rev-parse --show-toplevel
+$repoRootExit = $LASTEXITCODE
+if ($repoRootExit -ne 0) { throw "repository root resolution failed with exit $repoRootExit." }
+$repoRoot = $repoRootOutput.Trim()
+Set-Location -LiteralPath $repoRoot
+$pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "missing .venv/Scripts/python.exe." }
+$env:PYTHONPATH = Join-Path $repoRoot "src"
+
+$fixtureOutput = & $pythonExe -m pytest tests/contracts/test_semantic_result.py tests/model/test_recorded_fixture.py -q 2>&1
+$fixtureExit = $LASTEXITCODE
+$fixtureOutput
+if ($fixtureExit -ne 0) { throw "provider fixture integration test failed with exit $fixtureExit." }
+$allOutput = & $pythonExe -m pytest -q 2>&1
+$allExit = $LASTEXITCODE
+$allOutput
+if ($allExit -ne 0) { throw "full pytest failed with exit $allExit." }
+$mypyOutput = & $pythonExe -m mypy --strict src tests --exclude "tests/typecheck_fixtures" 2>&1
+$mypyExit = $LASTEXITCODE
+$mypyOutput
+if ($mypyExit -ne 0) { throw "mypy failed with exit $mypyExit." }
+
+$requiredRgTerms = @(
+    "ModelResponse", "payload: SemanticResultV1", "SEMANTIC_RESULT_ADAPTER.validate_json",
+    "InvalidJsonStep", "NonNegativeStrictInt", "PositiveStrictInt", "LowercaseSha256",
+    "filter_context_by_visibility.py", "model/__init__.py", "model_invoker.py", "fake_provider.py",
+    "scripted_provider.py", "recorded_fixture.py", "materialize_semantic_result_for_test"
+)
+foreach ($term in $requiredRgTerms) {
+    $termHits = @(rg -n --fixed-strings -- $term docs/specs/test-provider-and-fixtures.md src/neontof tests/model tests/fixtures/providers)
+    $termExit = $LASTEXITCODE
+    $termHits
+    if ($termExit -ne 0) { throw "required rg term '$term' failed with exit $termExit." }
+}
+$secretHits = @(rg -n -- "sk-[A-Za-z0-9]{20,}|TOP_SECRET_SENTINEL" src/neontof tests/fixtures)
+$secretExit = $LASTEXITCODE
+if ($secretExit -eq 0) { $secretHits; throw "secret or sentinel hit." }
+if ($secretExit -ne 1) { throw "secret scan failed with exit $secretExit." }
+$forbiddenRgPatterns = @(
+    "publication_visibility.py", "filter_context_by_visibility", "ContextBuilder", "context_builder",
+    "openai", "anthropic", "provider_registry", "ProviderRegistry", "Capability", "Plugin", "Hook",
+    "Profile", "sqlite3.connect", "sqlite3.Connection", "strict=False", "payload: FrozenJsonValue"
+)
+foreach ($pattern in $forbiddenRgPatterns) {
+    $forbiddenHits = @(rg -ni --fixed-strings -- $pattern src/neontof)
+    $forbiddenExit = $LASTEXITCODE
+    if ($forbiddenExit -eq 0) { $forbiddenHits; throw "forbidden rg hit '$pattern'." }
+    if ($forbiddenExit -ne 1) { throw "forbidden rg failed for '$pattern' with exit $forbiddenExit." }
+}
+$networkHits = @(rg -n -- "socket\.(socket|create_connection|create_server|getaddrinfo)|http\.client|urllib\.(request|parse)|requests\.|httpx\.(Client|AsyncClient)|urlopen" src/neontof)
+$networkExit = $LASTEXITCODE
+if ($networkExit -eq 0) { $networkHits; throw "network source pattern hit." }
+if ($networkExit -ne 1) { throw "network source scan failed with exit $networkExit." }
+~~~
+
+PASSはprovider test全成功、retry call count一致、P0-04 Accepted outcomeとmaterializerを通した
+Event Sequence deep equal、sanitized logに
 raw request / contextなし、filter正常、src/neontofとtests/fixturesにsecret・sentinelなし、
 openai・registry等なし、source network pattern 0件、全pytest sessionのautouse network禁止PASS、
 API keyなし、network call 0である。Provider testはFake / Scripted / Recorded Fixtureだけで、
@@ -2570,13 +3438,58 @@ OpenAI SDKはPhase 1候補のADR記録だけにする。
 3. feat: 記録済みProvider Fixtureを再生する
 4. docs: Test ProviderとFixtureの安全境界を定義する
 
-Gate証拠はFixture別test、call count、Event Sequence、sanitized shape、Signature、filter、
-socket禁止、sentinel不在、実Provider file 0件、openai検索0件とする。匿名化前responseが混入
+P0-07はP0-04のAcceptedSemanticResultとtest-only `materialize_semantic_result_for_test`の
+commit後に着手し、`tests/model/support/materialize_proposed_events.py`は作らない。上のtest
+commitは`tests/model/**`と`tests/fixtures/providers/**`だけを対象にし、P0-04のcontract support
+pathと`tests/test_repository_contracts.py`を変更しない。source commitはP0-07の5 production
+sourceだけを対象にし、manifest hunkを含めない。全production source着地後の唯一のmanifest
+integration commitで`tests/test_repository_contracts.py`を更新する。
+
+Gate証拠はFixture別test、call count、Accepted outcome、P0-04 materializerによるEvent Sequence、
+JSON bytesから`SEMANTIC_RESULT_ADAPTER.validate_json`を通ったtyped payload、InvalidJsonStepの
+success ModelResponse 0件、NonNegativeStrictInt / PositiveStrictInt / LowercaseSha256、sanitized
+shape、Signature、test-only filter、production publication filter path 0件、socket禁止、sentinel不在、
+実Provider file 0件、openai検索0件とする。匿名化前responseが混入
 した場合はcommitせず停止し、credential rotationの要否を報告する。
 
 ---
 
 ## 14. 重量パスのレビューと統合
+
+### 14.1 最終production manifest
+
+P0-03の11相対pathへP0-04〜P0-07のproduction sourceを加えた最終manifestは、次の20件を
+完全列挙した集合に固定する。`src/neontof`の`rglob("*.py")`をPOSIX相対pathへ正規化してこの
+集合と比較し、extra / missingを0件にする。`src/neontof/model/publication_visibility.py`はこの
+集合に含めず、作成しない。
+
+~~~text
+src/neontof/__init__.py
+src/neontof/main.py
+src/neontof/config.py
+src/neontof/app.py
+src/neontof/contracts/__init__.py
+src/neontof/contracts/base.py
+src/neontof/contracts/ids.py
+src/neontof/contracts/domain.py
+src/neontof/contracts/event_parser.py
+src/neontof/contracts/projection.py
+src/neontof/contracts/turn_status.py
+src/neontof/contracts/semantic_result.py
+src/neontof/contracts/transport.py
+src/neontof/contracts/character_sheet.py
+src/neontof/contracts/scenario.py
+src/neontof/model/__init__.py
+src/neontof/model/model_invoker.py
+src/neontof/model/fake_provider.py
+src/neontof/model/scripted_provider.py
+src/neontof/model/recorded_fixture.py
+~~~
+
+`tests/test_repository_contracts.py`のmanifest hunkはP0-04 / P0-05 / P0-06 / P0-07の個別commit
+から除外し、全20 production sourceの着地後に作る唯一のintegration commitで更新する。各WPの
+focused testはmanifest testを含めず、integration後に全suiteを実行する。共有hunkの途中版、二重
+所有、13 / 14 / 15件の段階manifestは作らない。
 
 1. 実装者と別の最上位impl-reviewerがAuthority、Visibility、version、Phase Non-goal、
    Pydantic strict / frozen、SQLite ownership、Python commandを一次reviewする。
@@ -2587,9 +3500,12 @@ claude -p "docs/plans/phase-00-foundation.mdと対象diffを突き合わせ、Ev
 ~~~
 
 3. blockingだけを修正し、再reviewは対応diffだけ最大2周。3周目を作らない。
-4. P0-04 / P0-05 / P0-06は独立review可能。P0-07はP0-04 commit後にreviewする。
-5. 統合後は重複、Signature / version衝突、dependency逆転、Node / OpenAI混入、SQLite
-   ownershipの合成退行だけを1回シーム監査する。
+4. P0-04 / P0-05 / P0-06は実装・仕様・focused testを独立review可能で、P0-07はP0-04の
+   AcceptedSemanticResult / test-only materializer commit後にreviewする。各個別diffにmanifest hunk
+   を含めず、全production source着地後に20件manifestのintegration commitを一度だけreviewする。
+5. integration後は重複、Signature / version衝突、Accepted / Rejected outcome境界、dependency逆転、
+   Node / OpenAI混入、production Context Builder / filter混入、SQLite ownershipの合成退行だけを
+   1回シーム監査する。
 6. review済みdiffを後続開始前にcommitし、git add -A / git add .を使わずpathを列挙する。
 
 ---
@@ -2618,14 +3534,15 @@ claude -p "docs/plans/phase-00-foundation.mdと対象diffを突き合わせ、Ev
 | Contract model | test_contract_model.py | strict、forbid、frozen、immutable、mutation/revalidation PASS |
 | Event parser | parser testと禁止検索 | unknown field/version、ID、payload reject、bypass 0件 |
 | Projection | domain / turn status test | 同一Event→同一Projection、revert、awaiting_player、resend |
-| Semantic | semantic result test | Narrative Event 0、Evidence reject、duplicate、一対一materialize |
-| Transport | transport test | HTTP POST、SSE / buffered同値、検証前Narrative非送信、本番endpoint 0件 |
-| Character | character sheet test | YAML safe_load、valid/invalid、strict/frozen、UTF-8 |
-| Scenario | scenario test | required Visibility欠落、gm_only player公開reject |
+| Semantic | semantic result test | decision table全行、valid rejectionはAccepted、入力契約違反はRejected、known_npc_ids、facts_by_id key一致、Visibility exact match、Evidence / duplicate code、Narrative Event 0、Accepted入力の一対一materialize、raw mapping root、private sanitizer |
+| Transport | transport test | Accepted入力から`semantic_result` → `narrative` → `done`、done data=`next_status`、SSE / buffered同値、検証前Narrative非送信、本番endpoint 0件、FrozenJsonValueはtransport内部だけ |
+| Character | character sheet test | YAML safe_load、required Visibility、speech_style省略/null、exact list / tuple全対象field、tuple subclass / generator / set / 任意Iterable reject、入力mutation非伝播、valid/invalid、strict/frozen/revalidation、module-qualified ResourceState、UTF-8 |
+| Scenario | scenario test | count/reference/duplicate ID、required Visibility、sourceのgm_only受理、missing_visibility別oracle、candidate混入時だけinvisible_scenario_content、unknown NPC visibility、success / failure exactly 1、public projection、Secret除外、exact list / tuple全対象field、入力mutation非伝播、strict/frozen/revalidation |
+| Repository production manifest | Phase 0 final verification専用の20-path `rglob` block、`tests/test_repository_contracts.py` | 全production source着地後の唯一のintegration commitで20件完全列挙、actualとのextra / missing / duplicate=0、個別WPのfocused testはmanifestを含めない |
 | YAML boundary | requirements、probe証拠、src検索 | PyYAML=6.0.3、safe_load=utf8_and_mapping_pass、No broken requirements found.、api_call=False、src YAML I/O 0件 |
-| Fake / Fixture | 全pytest session、pytest tests/model | success/failure/retry/timeout/invalid JSON、sanitized、filter、全session autouse network/socket禁止、source network pattern 0、API key/network call 0、sentinel不在 |
+| Fake / Fixture | 全pytest session、pytest tests/model | JSON bytes→`SEMANTIC_RESULT_ADAPTER.validate_json`→`SemanticResultV1` payload、InvalidJsonStepで成功ModelResponse 0、success/failure/retry/timeout/invalid JSON、typed counters/digest、sanitized、test-only filter、全session autouse network/socket禁止、source network pattern 0、API key/network call 0、sentinel不在 |
 | OpenAI contamination | requirementsとsource検索 | lock openai不在、import検索expected 0、ADRのPhase 1候補記録だけ |
-| Non-goal absence | Test-Path / Get-ChildItem + allowed root manifest | 禁止file / directoryの存在0件、`src/**/openai*.py`、`src/**/provider_registry.py`、`*.sqlite`、`*.db` 0件、manifest外changed path 0件 |
+| Non-goal absence | Test-Path / Get-ChildItem + final allowed phase path manifest | 禁止file / directoryの存在0件、`src/neontof/model/publication_visibility.py`、production Context Builder / filter、`src/**/openai*.py`、`src/**/provider_registry.py`、`*.sqlite`、`*.db` 0件、manifest外changed path 0件。`docs/status/phase-00-foundation.md`だけは最終status作成時に許可 |
 | CI parity | ci.yml、failure probe、remote run | localと同じPython command、故意exit 1、復元後green。remote未確認はpending |
 | Status | docs/status/phase-00-foundation.md | Gate結果、実出力、Known Issues、Phase 1停止 |
 | Line ending | git diff --numstat / --ignore-cr-at-eol --numstat | 2つが一致 |
@@ -2680,7 +3597,7 @@ if ($networkExit -ne 1) { throw "External network search tool failure with exit 
 Write-Output "openai_import_network_plugin_sqlite_source=0"
 ~~~
 
-内容検索は補助証拠であり、禁止pathの存在検査とallowed root manifestの集合差分を代替しない。
+内容検索は補助証拠であり、禁止pathの存在検査とfinal allowed phase path manifestの集合差分を代替しない。
 production-only forbidden語は`src/neontof`だけを対象にし、testsのreject case語を許す。source-only
 patternは`openai`、`anthropic`、`sqlite3.connect`、`sqlite3.Connection`、`provider_registry`とし、
 全ての`rg`はexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとして扱う。
@@ -2711,50 +3628,163 @@ if ($forbiddenFiles.Count -gt 0 -or $forbiddenDirs.Count -gt 0) {
   ($forbiddenFiles + $forbiddenDirs).FullName
   throw "Forbidden Phase 0 file or directory exists"
 }
-$allowedRootManifest = @(
-  ".python-version", "pyproject.toml", "requirements.in", "requirements-dev.in",
-  "requirements.lock.txt", ".env.example", ".gitignore", ".github/workflows/ci.yml",
-  "src/neontof/**", "tests/**", "docs/adr/**", "docs/specs/**", "docs/status/**"
-)
-function Test-AllowedPhasePath([string] $path) {
-  $normalized = $path.Replace("\", "/")
-  foreach ($root in $allowedRootManifest) {
-    $prefix = $root -replace "/\*\*$", ""
-    if ($normalized -eq $prefix -or $normalized.StartsWith("$prefix/")) { return $true }
-  }
-  return $false
-}
-$changedPaths = @(git diff --name-only $phaseBaseCommit --)
-$unexpectedPaths = @($changedPaths | Where-Object { -not (Test-AllowedPhasePath $_) })
-if ($unexpectedPaths.Count -gt 0) { $unexpectedPaths; throw "Path is outside Phase 0 allowed root manifest" }
-Write-Output "forbidden_paths=0; allowed_root_manifest_diff=0"
+Write-Output "forbidden_paths=0"
 ~~~
 
-上のactive path検索が0件で、候補比較の背景節だけにA/Cのtoolchain語が残ることを許容する。
+上のactive path検索が0件で、候補比較の背景節だけにA/Cのtoolchain語が残ることを許容する。changed-pathの
+allowed phase path manifestは、下のfresh final verification blockで20件production manifestと分離して検査する。
 実装pathに残ったTypeScript実行経路はFAILとする。禁止file / directoryは検索結果が空でも
-存在すればFAILであり、`phaseBaseCommit`はP0-01b入口で記録して計画編集diffと実装diffを分離する。
+存在すればFAILであり、`phaseBaseCommit`は下のfinal verification blockでP0-01b CI baseline
+`503a9a3`として実在確認してから使い、計画編集diffと実装diffを分離する。
 
 ### Phase 0 final verification
 
+P0-04〜P0-07のfresh PowerShell blockは各WPのfocused evidenceだけを取得し、manifest testを実行しない。
+全production sourceが着地した後、20件manifestの唯一のintegration commitを作ってから、fresh PowerShellで
+Phase 0 final verificationを実行する。P0-03 §9.5の11-path source scanはP0-03 focused gateの史料として
+残すが、このfinal verificationからは再利用しない。P0-01bのdependency / quality gateは固定commandとして
+再実行し、production sourceの最終集合は下の20件専用blockで比較する。
+
 ~~~powershell
-# P0-01b final Gate is the canonical block in §9.5 above. Execute that block verbatim;
-# do not substitute the existing repository .venv. It creates a unique TEMP/fresh isolated
-# venv, reruns the fixed TEMP pip-tools / pip-compile block, and saves every native exit code.
-# Its fixed inputs remain Python 3.14.3, requirements-dev.in, requirements.lock.txt,
-# --generate-hashes, and pip install --require-hashes. It includes pip check, compileall,
-# ruff format/check, normal mypy, pytest, openai absence, API-key restore, network guard,
-# lifecycle, workers=2 output probe, cleanup, and remote CI pending.
-# Then execute the P0-03 parser / projection / negative-mypy / forbidden / rglob blocks above.
+# Fresh PowerShell。P0-01b CI baselineの実在確認をchanged-path検査より先に行う。
+$phaseBaseCommit = '503a9a3'
+$baseCommitOutput = & git rev-parse --verify --quiet ($phaseBaseCommit + '^{commit}') 2>$null
+$baseCommitExit = $LASTEXITCODE
+$baseCommitText = [string]::Join([Environment]::NewLine, [string[]]@($baseCommitOutput)).Trim()
+if ($baseCommitExit -ne 0 -or [string]::IsNullOrWhiteSpace($baseCommitText)) {
+    throw "phaseBaseCommit $phaseBaseCommit could not be resolved."
+}
+"phaseBaseCommit=$phaseBaseCommit; resolved=$baseCommitText"
+
+$repositoryRootOutput = & git rev-parse --show-toplevel
+$repositoryRootExit = $LASTEXITCODE
+if ($repositoryRootExit -ne 0 -or [string]::IsNullOrWhiteSpace(($repositoryRootOutput -join ''))) {
+    throw "repository root resolution failed with exit $repositoryRootExit."
+}
+$repositoryRoot = [System.IO.Path]::GetFullPath(($repositoryRootOutput -join '').Trim())
+Set-Location -LiteralPath $repositoryRoot
+$pythonExe = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '.venv/Scripts/python.exe'))
+if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw 'missing .venv/Scripts/python.exe.' }
+
+# final production manifest。§14の20 relative pathsをそのままactualと比較する。
+$finalManifestScript = @'
+from pathlib import Path
+
+expected = [
+    'src/neontof/__init__.py',
+    'src/neontof/main.py',
+    'src/neontof/config.py',
+    'src/neontof/app.py',
+    'src/neontof/contracts/__init__.py',
+    'src/neontof/contracts/base.py',
+    'src/neontof/contracts/ids.py',
+    'src/neontof/contracts/domain.py',
+    'src/neontof/contracts/event_parser.py',
+    'src/neontof/contracts/projection.py',
+    'src/neontof/contracts/turn_status.py',
+    'src/neontof/contracts/semantic_result.py',
+    'src/neontof/contracts/transport.py',
+    'src/neontof/contracts/character_sheet.py',
+    'src/neontof/contracts/scenario.py',
+    'src/neontof/model/__init__.py',
+    'src/neontof/model/model_invoker.py',
+    'src/neontof/model/fake_provider.py',
+    'src/neontof/model/scripted_provider.py',
+    'src/neontof/model/recorded_fixture.py',
+]
+actual = [path.as_posix() for path in Path('src/neontof').rglob('*.py')]
+expected_sorted = sorted(expected)
+actual_sorted = sorted(actual)
+extra = sorted(set(actual_sorted) - set(expected_sorted))
+missing = sorted(set(expected_sorted) - set(actual_sorted))
+duplicates = sorted(path for path in set(actual) if actual.count(path) > 1)
+print(f'expected_count={len(expected_sorted)}; actual_count={len(actual_sorted)}')
+print(f'extra={extra}; missing={missing}; duplicate={duplicates}')
+assert len(extra) == 0 and len(missing) == 0 and len(duplicates) == 0 and actual_sorted == expected_sorted
+'@
+$rglobOutput = & $pythonExe -c $finalManifestScript 2>&1
+$rglobExit = $LASTEXITCODE
+$rglobOutput
+if ($rglobExit -ne 0) { throw "final 20-path production manifest rglob failed with exit $rglobExit." }
+
+# changed-pathのallowed phase path manifest。production manifestとは別のscope検査である。
+$allowedPhasePathManifest = @(
+    '.python-version', 'pyproject.toml', 'requirements.in', 'requirements-dev.in',
+    'requirements.lock.txt', '.env.example', '.gitignore', '.github/workflows/ci.yml',
+    'src/neontof/**', 'tests/**', 'docs/adr/**', 'docs/specs/**',
+    'docs/status/phase-00-foundation.md'
+)
+function Test-AllowedPhasePath([string] $path) {
+    $normalized = $path.Replace('\', '/')
+    foreach ($allowedPath in $allowedPhasePathManifest) {
+        if ($allowedPath.EndsWith('/**')) {
+            $prefix = $allowedPath.Substring(0, $allowedPath.Length - 3)
+            if ($normalized -eq $prefix -or $normalized.StartsWith("$prefix/")) { return $true }
+        } elseif ($normalized -ceq $allowedPath) {
+            return $true
+        }
+    }
+    return $false
+}
+$changedPathOutput = @(git diff --name-only $phaseBaseCommit --)
+$changedPathsExit = $LASTEXITCODE
+$changedPathOutput
+if ($changedPathsExit -ne 0) { throw "changed-path diff failed with exit $changedPathsExit." }
+$changedPaths = @(
+    $changedPathOutput |
+        ForEach-Object { $_.Replace('\', '/') } |
+        Where-Object { $_ -and $_ -ne 'docs/plans/phase-00-foundation.md' }
+)
+$unexpectedPaths = @($changedPaths | Where-Object { -not (Test-AllowedPhasePath $_) })
+if ($unexpectedPaths.Count -gt 0) { $unexpectedPaths; throw 'Path is outside final allowed phase path manifest.' }
+"changed_paths_excluding_plan=$($changedPaths.Count); allowed_phase_path_manifest_diff=0"
+
+# native git gateは各commandの直後にexitを保存し、非期待値をFAILにする。
 git diff --check
-git diff --numstat
-git diff --ignore-cr-at-eol --numstat
-git status --short --untracked-files=all
+$diffCheckExit = $LASTEXITCODE
+if ($diffCheckExit -ne 0) { throw "git diff --check failed with exit $diffCheckExit." }
+
+$numstatOutput = @(git diff --numstat)
+$numstatExit = $LASTEXITCODE
+$numstatOutput
+if ($numstatExit -ne 0) { throw "git diff --numstat failed with exit $numstatExit." }
+
+$ignoreCrNumstatOutput = @(git diff --ignore-cr-at-eol --numstat)
+$ignoreCrNumstatExit = $LASTEXITCODE
+$ignoreCrNumstatOutput
+if ($ignoreCrNumstatExit -ne 0) { throw "git diff --ignore-cr-at-eol --numstat failed with exit $ignoreCrNumstatExit." }
+$numstatText = [string]::Join("`n", [string[]]$numstatOutput)
+$ignoreCrNumstatText = [string]::Join("`n", [string[]]$ignoreCrNumstatOutput)
+if ($numstatText -cne $ignoreCrNumstatText) { throw 'numstat differs from --ignore-cr-at-eol --numstat.' }
+"numstat_equal_ignore_cr_at_eol=True"
+
+$statusOutput = @(git status --short --untracked-files=all)
+$statusExit = $LASTEXITCODE
+$statusOutput
+if ($statusExit -ne 0) { throw "git status failed with exit $statusExit." }
+
+# final required scan。各rgのexit 0だけをrequired-hit成功、その他をFAILにする。
+$requiredFinalTerms = @(
+    'FactAsserted', 'derive_fact_id', 'SemanticResultV1', 'AcceptedSemanticResult',
+    'CharacterSheetV1', 'ScenarioV1', 'ModelResponse'
+)
+foreach ($term in $requiredFinalTerms) {
+    $requiredHits = @(rg -n --fixed-strings -- $term src/neontof tests)
+    $requiredExit = $LASTEXITCODE
+    $requiredHits
+    if ($requiredExit -ne 0) { throw "final required scan failed for '$term' with exit $requiredExit." }
+}
+
+# P0-01bのfresh TEMP/fresh venv、locked install、compileall、ruff、mypy、pytest、network、
+# lifecycle、workers=2、remote CI pendingは、本文で確定した各canonical commandを個別に実行し、
+# 各native exitを直後に保存する。P0-03 focused source-scan blockはここでは実行しない。
 ~~~
 
 P0-01b final Gateはrepository `.venv` installだけを証拠にしない。negative mypyだけはexpected exit 1なので
 通常qualityのexit 0とは別の証拠欄へ記録し、stdout / stderr、error lines exactly 2、両方`[arg-type]`、
 other errors 0、fixture filename / `rebuild_projection` / `TranscriptEntry` / `TelemetryEntry` fragmentを残す。
-`pip-tools (7.6.1)`、direct root set集合一致、禁止path存在0件、manifest外changed path 0件、
+`pip-tools (7.6.1)`、direct root set集合一致、禁止path存在0件、20件production manifestのextra /
+missing / duplicate=0、final allowed phase path manifest外changed path 0件、
 sqlite3 connection source 0件、全pytest sessionのnetwork call 0を同じGate証拠へ記録する。
 Phase完了報告にはentrypointのHTTP status / JSON、shutdown / PID / rebind、stdout / stderr、
 CI failure / green runの実出力を含め、実Providerの一回きりの出力を使わない。
@@ -2788,7 +3818,7 @@ CI failure / green runの実出力を含め、実Providerの一回きりの出�
 ## 17. Commit boundary とPhase Completion
 
 1. 1 commit = 1 logical change。件名は英語type + 日本語命令形とする。
-2. **この計画更新のcommit名:** docs: Phase 0計画をPython Stackへ更新する。stageするのは
+2. **この計画補正のcommit名:** docs: Phase 0契約計画の補正を反映する。stageするのは
    docs/plans/phase-00-foundation.mdだけである。
 3. **P0-02b ADR commit名:** docs: NeontoFのPython技術スタックを決定する。stageするのは
    docs/adr/0001-technology-stack.mdだけである。
@@ -2799,14 +3829,19 @@ CI failure / green runの実出力を含め、実Providerの一回きりの出�
    NeontoFと同一commitにしない。
 5. Failing Test → Minimal Implementation → Refactor → 文書の順を既定とする。ただしP0-01bは
    runner bootstrap後にimport REDを作り、最小health実装でGreenにする。
-6. dangerous spec / ADR diffは一次・クロスAI二次review後にcommitする。
-7. stageは宣言scopeのpathを明示し、git add -A / git add .を使わない。pushしない。
-8. commit前にgit diff --check、numstat 2種、git status --short --untracked-files=all、関係
+6. P0-04 / P0-05 / P0-06の実装・仕様・focused test commitは並列可だが、各commitから
+   `tests/test_repository_contracts.py`のmanifest hunkを除外する。P0-07はP0-04の
+   AcceptedSemanticResultとtest-only`materialize_semantic_result_for_test`のcommit後に着手し、
+   重複helperを作らない。全20 production sourceの着地後、manifest hunkを含む
+   `tests/test_repository_contracts.py`だけの唯一のintegration commitを作り、その後に全suiteを通す。
+7. dangerous spec / ADR diffは一次・クロスAI二次review後にcommitする。
+8. stageは宣言scopeのpathを明示し、git add -A / git add .を使わない。pushしない。
+9. commit前にgit diff --check、numstat 2種、git status --short --untracked-files=all、関係
    testを実行する。
-9. Phase completion commitはdocs: Phase 0のGate証拠を記録する。stageはdocs/status/
+10. Phase completion commitはdocs: Phase 0のGate証拠を記録する。stageはdocs/status/
    phase-00-foundation.mdだけである。
-10. completion条件はPhase Gate全件PASS。ただしCI remote未確認はpendingとしてcompletion不可。
-11. Gate通過後もPhase 1 file、client、migrations、OpenAI SDKを作らず停止する。
+11. completion条件はPhase Gate全件PASS。ただしCI remote未確認はpendingとしてcompletion不可。
+12. Gate通過後もPhase 1 file、client、migrations、OpenAI SDKを作らず停止する。
 
 ---
 
