@@ -30,6 +30,7 @@ P0-07 では次を作らない。これらが必要になった場合は計画�
 - API key、Secret store、Secret Store integration、credential 管理
 - retry runtime、backoff、retry policy、timeout policy、budget / rate limit runtime
 - Provider registry、Plugin、Hook、Profile、capability negotiation、capability registry
+- `object_pairs_hook` は標準 `json` の duplicate-key detection に限って許可する。それ以外の `*hook*` vocabulary（`Hook`、`LifecycleHook`、`hook_registry` など）は Phase 0 forbidden scan で拒否する。
 - 二つ目の Provider を前提にした hierarchy、generic factory、interface の一般化
 - production Context Builder、production visibility filter、Prompt 生成、Provider request mapping
 - Event append、State / Canon の更新、Turn Engine、Event Store
@@ -494,7 +495,8 @@ repository root で次を実行する。PowerShell の正式な local command �
 | 今回のレビュー時実測: .\\.venv\\Scripts\\python.exe -m pytest tests/contracts/test_semantic_result.py tests/model/test_recorded_fixture.py -q | 193 passed in 0.51s / exit 0 |
 | 今回のレビュー時実測: .\\.venv\\Scripts\\python.exe -m pytest -q | 587 passed, 2 warnings in 3.00s / exit 0。warning は Starlette/httpx と Pydantic の既存 deprecation warning。 |
 | 今回のレビュー時実測: required term `rg` scan（19 terms） | 全19 terms が exit 0。 |
-| 今回のレビュー時実測: secret / sentinel、forbidden source pattern、bare `Hook` identifier、network source pattern の `rg` scan | secret / sentinel は exit 1（zero hits）、forbidden source pattern は全15 patterns が exit 1（zero hits）、bare `Hook` は exit 1（zero hits）、network source pattern は exit 1（zero hits）。 |
+| 今回のレビュー時実測: secret / sentinel、forbidden source pattern、network source pattern の `rg` scan | secret / sentinel は exit 1（zero hits）、forbidden source pattern は全15 patterns が exit 1（zero hits）、network source pattern は exit 1（zero hits）。 |
+| 今回のレビュー時実測: token allowlist scan `rg -o --no-filename --pcre2 -i -- '(?<![A-Za-z0-9_])[A-Za-z_]*hook[A-Za-z0-9_]*' src/neontof` | src scan -> exit 0、tokens=`object_pairs_hook`、violations=0。synthetic probe -> `Hook` / `LifecycleHook` / `hook_registry` / その他の `Hook` 語彙は violations、完全一致 allowlist は `object_pairs_hook` だけ。exit 0 は token を allowlist 評価、exit 1 は token なし、exit 2 以上は tool failure。 |
 
 network guard の setup plan で確認した test node は test_external_connection_entrypoints_fail_fast、test_socket_methods_are_guarded_without_connecting、test_socket_getaddrinfo_is_guarded_without_resolving、test_socket_sendto_is_guarded_without_sending、test_socket_send_is_guarded_without_sending、test_socket_sendall_is_guarded_without_sending、test_http_client_connect_methods_are_guarded_without_connecting、test_socketpair_internal_send_methods_remain_allowed である。
 
