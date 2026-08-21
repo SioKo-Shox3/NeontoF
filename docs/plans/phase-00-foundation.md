@@ -3537,7 +3537,7 @@ $hookAllowlist = @("object_pairs_hook")
 $hookTokens = @(rg -o --no-filename --pcre2 -i -- "(?<![A-Za-z0-9_])[A-Za-z_]*hook[A-Za-z0-9_]*" src/neontof)
 $hookScanExit = $LASTEXITCODE
 if ($hookScanExit -ne 0 -and $hookScanExit -ne 1) { throw "Hook identifier token scan tool failure with exit $hookScanExit." }
-$hookViolations = @($hookTokens | Where-Object { $hookAllowlist -notcontains $_ })
+$hookViolations = @($hookTokens | Where-Object { $hookAllowlist -cnotcontains $_ })
 if ($hookViolations.Count -gt 0) { $hookViolations; throw "forbidden Hook vocabulary found." }
 $networkHits = @(rg -n -- "socket\.(socket|create_connection|create_server|getaddrinfo)|http\.client|urllib\.(request|parse)|requests\.|httpx\.(Client|AsyncClient)|urlopen" src/neontof)
 $networkExit = $LASTEXITCODE
@@ -3559,11 +3559,12 @@ openai・registry等なし、allowlist外のHook語彙0件、source network patt
 `tests/test_no_external_network.py`のfocused test / setup-planがexit 0、DNSの`getaddrinfo`を含む
 socket / HTTP guardが全sessionで有効、API keyなし、network call 0である。Provider testはFake / Scripted / Recorded Fixtureだけで、
 OpenAI SDKはPhase 1候補のADR記録だけにする。
-このP0-07のproduction-only forbidden scanでもtestsのreject case語を許し、forbidden source patternの
-`rg`はexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとする。Hookは
-識別子tokenを抽出して`object_pairs_hook`だけをallowlistし、`LifecycleHook`、`hook_registry`、bare
-`Hook` alias / import / annotation / call / classを含むその他のHook語彙はfailとする。token scanは
-exit 0ならallowlist評価へ進み、exit 1ならzero-hit成功、exit 2以上ならtool failureとする。
+このP0-07のproduction-only forbidden scanでもtestsのreject case語を許し、固定文字列forbidden loopは
+exit 1をzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとする。Hookは識別子tokenを
+抽出し、allowlistの比較を完全一致・大小文字区別に固定して`object_pairs_hook`だけを許可する。
+`LifecycleHook`、`hook_registry`、bare `Hook` alias / import / annotation / call / classを含むその他の
+Hook語彙はfailとする。Hook token scanはexit 0をtokenありとしてallowlist評価へ進み、exit 1をtokenなしの
+成功、exit 2以上をtool failureとする。
 
 ### 13.6 Commit boundary、Gate証拠、rollback
 
