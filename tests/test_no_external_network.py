@@ -1,3 +1,4 @@
+import http.client
 import socket
 import urllib.request
 
@@ -30,6 +31,11 @@ def test_socket_methods_are_guarded_without_connecting() -> None:
         connection.close()
 
 
+def test_socket_getaddrinfo_is_guarded_without_resolving() -> None:
+    with pytest.raises(AssertionError, match="External network access"):
+        socket.getaddrinfo("localhost", 1)
+
+
 def test_socket_sendto_is_guarded_without_sending() -> None:
     connection = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -55,6 +61,22 @@ def test_socket_sendall_is_guarded_without_sending() -> None:
             connection.sendall(b"blocked")
     finally:
         connection.close()
+
+
+def test_http_client_connect_methods_are_guarded_without_connecting() -> None:
+    http_connection = http.client.HTTPConnection("127.0.0.1", 1)
+    try:
+        with pytest.raises(AssertionError, match="External network access"):
+            http_connection.connect()
+    finally:
+        http_connection.close()
+
+    https_connection = http.client.HTTPSConnection("127.0.0.1", 1)
+    try:
+        with pytest.raises(AssertionError, match="External network access"):
+            https_connection.connect()
+    finally:
+        https_connection.close()
 
 
 def test_socketpair_internal_send_methods_remain_allowed() -> None:

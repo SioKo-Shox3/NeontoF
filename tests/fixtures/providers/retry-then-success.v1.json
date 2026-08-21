@@ -1,0 +1,57 @@
+{
+  "fixture_version": 1,
+  "name": "retry-then-success",
+  "steps": [
+    {
+      "type": "model_error",
+      "code": "temporary_failure",
+      "message": "upstream said: transient connection reset"
+    },
+    {
+      "type": "success",
+      "response": {
+        "payload": {
+          "schema_version": 1,
+          "rulings": [],
+          "proposed_events": [
+            {
+              "type": "ResourceChanged",
+              "payload": {
+                "resource_id": "resource:gold",
+                "entity_id": "entity:hero",
+                "delta": 2
+              }
+            }
+          ],
+          "proposed_facts": [],
+          "knowledge_changes": [],
+          "visibility_changes": [],
+          "clarification_request": null,
+          "rejection": null,
+          "narrative_plan": [],
+          "narrative": "",
+          "mentioned_details": [],
+          "evidence": [],
+          "suggested_actions": []
+        },
+        "usage": {
+          "input_tokens": 12,
+          "output_tokens": 8,
+          "cached_tokens": 0
+        }
+      }
+    }
+  ],
+  "expected_call_count": 2,
+  "expected_final_outcome": "success",
+  "expected_proposed_events": [
+    {
+      "type": "ResourceChanged",
+      "payload": {
+        "resource_id": "resource:gold",
+        "entity_id": "entity:hero",
+        "delta": 2
+      }
+    }
+  ]
+}

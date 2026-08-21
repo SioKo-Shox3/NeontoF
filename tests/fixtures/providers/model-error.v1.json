@@ -1,0 +1,14 @@
+{
+  "fixture_version": 1,
+  "name": "model-error",
+  "steps": [
+    {
+      "type": "model_error",
+      "code": "upstream_unavailable",
+      "message": "upstream said: connection reset by peer"
+    }
+  ],
+  "expected_call_count": 1,
+  "expected_final_outcome": "model_error",
+  "expected_proposed_events": []
+}

@@ -1,5 +1,6 @@
 """外部OS socketとHTTP clientの接続経路をfail-fastに置き換える。"""
 
+import http.client
 import socket
 import threading
 import urllib.request
@@ -13,6 +14,7 @@ _ORIGINAL_SOCKET_CONNECT = socket.socket.connect
 _ORIGINAL_SOCKET_CONNECT_EX = socket.socket.connect_ex
 _ORIGINAL_SOCKET_SEND = socket.socket.send
 _ORIGINAL_SOCKET_SENDALL = socket.socket.sendall
+_ORIGINAL_GETADDRINFO = socket.getaddrinfo
 _ORIGINAL_SOCKETPAIR = socket.socketpair
 # 内部 socketpair の endpoint だけを識別し、通常の socket への送信は拒否する。
 _INTERNAL_SOCKETPAIR_SOCKETS: WeakSet[socket.socket] = WeakSet()
@@ -69,8 +71,11 @@ def install_network_guards(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket.socket, "send", _guarded_socket_send)
     monkeypatch.setattr(socket.socket, "sendall", _guarded_socket_sendall)
     monkeypatch.setattr(socket.socket, "sendto", _blocked_external_call)
+    monkeypatch.setattr(socket, "getaddrinfo", _blocked_external_call)
     monkeypatch.setattr(socket, "socketpair", _guarded_socketpair)
     monkeypatch.setattr(socket, "create_connection", _blocked_external_call)
     monkeypatch.setattr(httpx, "HTTPTransport", _blocked_external_call)
     monkeypatch.setattr(httpx, "AsyncHTTPTransport", _blocked_external_call)
     monkeypatch.setattr(urllib.request, "urlopen", _blocked_external_call)
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", _blocked_external_call)
+    monkeypatch.setattr(http.client.HTTPSConnection, "connect", _blocked_external_call)

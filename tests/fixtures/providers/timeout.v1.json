@@ -1,0 +1,12 @@
+{
+  "fixture_version": 1,
+  "name": "timeout",
+  "steps": [
+    {
+      "type": "timeout"
+    }
+  ],
+  "expected_call_count": 1,
+  "expected_final_outcome": "timeout",
+  "expected_proposed_events": []
+}
