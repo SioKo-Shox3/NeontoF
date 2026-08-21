@@ -15,10 +15,9 @@ from tests.model.support.run_invocation_scenario import run_invocation_scenario
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from neontof.contracts.semantic_result import SemanticValidationContext
     from neontof.model.model_invoker import ModelRequest, PublicationVisibility, Role
     from neontof.model.recorded_fixture import RecordedFixtureV1, TestProvider
-
-    from neontof.contracts.semantic_result import SemanticValidationContext
     from tests.contracts.support.materialize_proposed_events import FixtureEventContext
 
 
@@ -303,8 +302,9 @@ def test_success_step_payload_is_semantic_result_model(fixture_name: str) -> Non
     fixture = load_recorded_fixture(_fixture_source(fixture_name))
 
     from neontof.contracts.semantic_result import SemanticResultV1
+    from neontof.model.model_invoker import SuccessStep
 
-    success_steps = tuple(step for step in fixture.steps if step.type == "success")
+    success_steps = tuple(step for step in fixture.steps if isinstance(step, SuccessStep))
     assert len(success_steps) == 1
     payload = success_steps[0].response.payload
     assert isinstance(payload, SemanticResultV1)
@@ -478,8 +478,17 @@ def test_json_bytes_preserve_array_order_and_scalar_types() -> None:
     load_recorded_fixture, _ = _fixture_api()
     fixture = load_recorded_fixture(_LOSSLESS_FIXTURE)
 
-    payload = fixture.steps[0].response.payload
-    assert tuple(event.payload.resource_id for event in payload.proposed_events) == (
+    from neontof.contracts.semantic_result import ProposedResourceChanged
+    from neontof.model.model_invoker import SuccessStep
+
+    step = fixture.steps[0]
+    assert isinstance(step, SuccessStep)
+    payload = step.response.payload
+    assert tuple(
+        event.payload.resource_id
+        for event in payload.proposed_events
+        if isinstance(event, ProposedResourceChanged)
+    ) == (
         "resource:gold",
         "resource:silver",
     )
