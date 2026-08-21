@@ -10,7 +10,7 @@ import re
 from collections.abc import Mapping
 from itertools import product
 from pathlib import Path
-from typing import Any, Literal, get_args, get_origin
+from typing import Any, Literal, cast, get_args, get_origin, get_type_hints
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -40,6 +40,7 @@ ROOT_SEQUENCE_FIELDS = (
     "suggested_actions",
 )
 RULING_SEQUENCE_FIELDS = ("rule_refs", "facts_used", "proposed_effects")
+type TurnStatus = Literal["running", "awaiting_player"]
 
 
 def _event_proposal(
@@ -163,7 +164,7 @@ def _custom_fact(
 
 def _context(
     *,
-    current_turn_status: str = "running",
+    current_turn_status: TurnStatus = "running",
     publication_visibility: str = "player_visible",
     fact: Any | None = None,
     facts_by_id: tuple[tuple[str, Any], ...] | None = None,
@@ -183,7 +184,7 @@ def _context(
 def _evaluate(
     raw: object,
     *,
-    current_turn_status: str = "running",
+    current_turn_status: TurnStatus = "running",
     publication_visibility: str = "player_visible",
     fact: Any | None = None,
     facts_by_id: tuple[tuple[str, Any], ...] | None = None,
@@ -216,7 +217,7 @@ def _alias_contains(alias: object, target: object, seen: set[int] | None = None)
     return any(_alias_contains(argument, target, visited) for argument in get_args(alias))
 
 
-def _validation_failure_next_status(current_status: str) -> str:
+def _validation_failure_next_status(current_status: TurnStatus) -> str:
     assert current_status in {"running", "awaiting_player"}
     return "aborted" if current_status == "running" else "awaiting_player"
 
@@ -462,7 +463,7 @@ def test_roll_spec_type_adapter_revalidates_a_constructed_instance() -> None:
     from neontof.contracts.semantic_result import RollSpec
 
     adapter = TypeAdapter(RollSpec)
-    constructed = RollSpec.model_construct()
+    constructed = RollSpec.model_construct(formula="1d20")
     field_name = next(iter(RollSpec.model_fields))
     object.__setattr__(constructed, field_name, object())
     with pytest.raises(ValidationError):
@@ -483,6 +484,8 @@ def test_validate_semantic_result_has_the_public_typed_signature() -> None:
     assert annotations["input_value"] is RawSemanticResultInput
     assert annotations["context"] is SemanticValidationContext
     assert annotations["return"] is SemanticValidationOutcome
+    context_annotations = get_type_hints(SemanticValidationContext.__init__)
+    assert context_annotations["current_turn_status"] == Literal["running", "awaiting_player"]
 
 
 def test_valid_control_and_proposal_keep_semantic_result_separate_from_narrative() -> None:
@@ -525,7 +528,7 @@ def test_valid_rejection_is_an_accepted_semantic_result_control() -> None:
     ids=lambda value: str(value),
 )
 def test_control_decision_table_is_fixed_for_both_turn_statuses(
-    current_status: str,
+    current_status: TurnStatus,
     clarification: bool,
     rejection: bool,
     proposals: bool,
@@ -578,7 +581,7 @@ def test_clarification_fixture_is_accepted_without_a_state_proposal() -> None:
     ],
 )
 def test_invalid_and_duplicate_fixtures_are_rejected_with_limited_codes(
-    current_status: str,
+    current_status: TurnStatus,
     fixture_name: str,
     expected_code: str,
 ) -> None:
@@ -611,7 +614,7 @@ def test_invalid_and_duplicate_fixtures_are_rejected_with_limited_codes(
 def test_schema_and_context_validation_failures_set_status_by_current_turn(
     failure_kind: str,
     expected_codes: set[str],
-    current_status: str,
+    current_status: TurnStatus,
 ) -> None:
     raw = base_result()
     if failure_kind == "schema":
@@ -1361,6 +1364,8 @@ def test_narrative_changes_do_not_change_materialized_state_proposals() -> None:
 
 
 def test_materializer_accepts_only_accepted_result_and_emits_one_event_per_proposal() -> None:
+    from neontof.contracts.semantic_result import AcceptedSemanticResult
+
     accepted = _assert_accepted(_evaluate(load_fixture("valid-proposals.v1.json")), "running")
     context = FixtureEventContext(
         campaign="campaign:alpha",
@@ -1381,7 +1386,10 @@ def test_materializer_accepts_only_accepted_result_and_emits_one_event_per_propo
     assert len({event.event_id for event in events}) == len(events)
 
     with pytest.raises(TypeError):
-        materialize_semantic_result_for_test({"type": "rejected"}, context)
+        materialize_semantic_result_for_test(
+            cast(AcceptedSemanticResult, {"type": "rejected"}),
+            context,
+        )
 
 
 def test_materializer_matches_handwritten_domain_events_and_projection_fact_ids() -> None:

@@ -270,10 +270,11 @@ def test_sequence_fields_accept_only_exact_list_or_tuple(
     valid_value = _get_path(raw, path)
     assert isinstance(valid_value, list)
 
+    invalid_value: object
     if invalid_kind == "list_subclass":
-        invalid_value: object = _ListSubclass(valid_value)
+        invalid_value = _ListSubclass(valid_value)
     elif invalid_kind == "tuple_subclass":
-        invalid_value: object = _TupleSubclass(tuple(valid_value))
+        invalid_value = _TupleSubclass(tuple(valid_value))
     elif invalid_kind == "generator":
         invalid_value = (item for item in valid_value)
     elif invalid_kind == "set":
@@ -468,7 +469,7 @@ def test_all_public_sequence_fields_are_tuples_and_tuple_mutation_fails() -> Non
         value = _get_model_path(sheet, path)
         assert type(value) is tuple
         with pytest.raises(TypeError):
-            setitem(value, 0, value[0])
+            setitem(cast(list[object], value), 0, value[0])
 
 
 @pytest.mark.parametrize(

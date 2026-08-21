@@ -12,7 +12,6 @@ if TYPE_CHECKING:
         ProposedFact,
         ProposedResourceChanged,
     )
-from pydantic import Field, StrictInt
 
 from neontof.contracts.base import ContractModel
 from neontof.contracts.domain import (
@@ -34,6 +33,7 @@ from neontof.contracts.ids import (
     TurnId,
     Visibility,
 )
+from neontof.contracts.semantic_result import PositiveStrictInt
 
 
 class FixtureEventContext(ContractModel):
@@ -43,7 +43,7 @@ class FixtureEventContext(ContractModel):
     session: SessionId
     scene: SceneId
     turn: TurnId
-    sequence_start: StrictInt = Field(gt=0)
+    sequence_start: PositiveStrictInt
     occurred_at: OccurredAt
     origin: Literal["in_world", "table_correction"]
     visibility: Visibility

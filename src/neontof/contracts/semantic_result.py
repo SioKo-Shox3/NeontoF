@@ -232,7 +232,7 @@ class SemanticValidationContext(ContractModel):
         known_location_ids: frozenset[LocationId],
         known_clock_ids: frozenset[ClockId],
         facts_by_id: tuple[tuple[FactId, EvidenceFact], ...],
-        current_turn_status: str,
+        current_turn_status: Literal["running", "awaiting_player"],
         publication_visibility: PublicationVisibility,
     ) -> None:
         BaseModel.__init__(

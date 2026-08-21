@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import Any, cast, get_args, get_origin, get_type_hints
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -59,9 +59,9 @@ def test_transport_builders_accept_only_accepted_semantic_results() -> None:
 
     raw_model = SemanticResultV1.model_validate(base_result())
     with pytest.raises((TypeError, ValidationError)):
-        build_buffered_response(raw_model)
+        build_buffered_response(cast(AcceptedSemanticResult, raw_model))
     with pytest.raises((TypeError, ValidationError)):
-        build_sse_frames(raw_model)
+        build_sse_frames(cast(AcceptedSemanticResult, raw_model))
 
     rejected = RejectedSemanticResult(
         type="rejected",
@@ -69,9 +69,9 @@ def test_transport_builders_accept_only_accepted_semantic_results() -> None:
         next_status="aborted",
     )
     with pytest.raises((TypeError, ValidationError)):
-        build_buffered_response(rejected)
+        build_buffered_response(cast(AcceptedSemanticResult, rejected))
     with pytest.raises((TypeError, ValidationError)):
-        build_sse_frames(rejected)
+        build_sse_frames(cast(AcceptedSemanticResult, rejected))
 
 
 def test_public_transport_frame_alias_and_adapter_validate_discriminators() -> None:
@@ -131,11 +131,14 @@ def test_turn_post_request_is_strict_frozen_and_keeps_input_at_request_boundary(
     with pytest.raises(ValidationError):
         request.input_text = "changed"
     with pytest.raises(ValidationError):
-        TurnPostRequest(
-            type="turn_post",
-            turn_request_id="turn-request:one",
-            input_text="input",
-            unexpected="field",
+        TurnPostRequest.model_validate(
+            {
+                "type": "turn_post",
+                "turn_request_id": "turn-request:one",
+                "input_text": "input",
+                "unexpected": "field",
+            },
+            strict=True,
         )
 
     corrupted = TurnPostRequest.model_construct(
@@ -190,7 +193,7 @@ def test_transport_frames_are_semantic_result_then_narrative_then_done() -> None
 def test_transport_does_not_send_unvalidated_narrative_or_raw_input(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from neontof.contracts.semantic_result import SemanticResultV1
+    from neontof.contracts.semantic_result import AcceptedSemanticResult, SemanticResultV1
     from neontof.contracts.transport import build_buffered_response, build_sse_frames
 
     raw_secret = "UNVALIDATED_NARRATIVE_SECRET_SENTINEL"
@@ -199,9 +202,9 @@ def test_transport_does_not_send_unvalidated_narrative_or_raw_input(
     semantic_model = SemanticResultV1.model_validate(raw)
     caplog.set_level(logging.DEBUG)
     with pytest.raises((TypeError, ValidationError)) as buffered_error:
-        build_buffered_response(semantic_model)
+        build_buffered_response(cast(AcceptedSemanticResult, semantic_model))
     with pytest.raises((TypeError, ValidationError)) as sse_error:
-        build_sse_frames(semantic_model)
+        build_sse_frames(cast(AcceptedSemanticResult, semantic_model))
     assert raw_secret not in str(buffered_error.value)
     assert raw_secret not in repr(buffered_error.value)
     assert raw_secret not in str(sse_error.value)

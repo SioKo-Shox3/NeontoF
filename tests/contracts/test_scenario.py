@@ -200,7 +200,10 @@ class _ListSubclass(list[object]):
 
 
 class _HashableMapping(dict[str, Any]):
-    def __hash__(self) -> int:
+    def __init__(self, value: dict[str, Any]) -> None:
+        super().__init__(deepcopy(value))
+
+    def __hash__(self) -> int:  # type: ignore[override]
         return id(self)
 
 
@@ -211,9 +214,7 @@ class _ArbitraryIterable:
 
 def _as_valid_set_element(value: Any) -> Any:
     if isinstance(value, dict):
-        return _HashableMapping(
-            {key: _as_valid_set_element(item) for key, item in deepcopy(value).items()}
-        )
+        return _HashableMapping({key: _as_valid_set_element(item) for key, item in value.items()})
     if isinstance(value, list):
         return tuple(_as_valid_set_element(item) for item in deepcopy(value))
     if isinstance(value, tuple):
@@ -613,6 +614,25 @@ def test_exact_list_and_tuple_fields_copy_to_new_tuples_without_input_mutation(
 
 
 @pytest.mark.parametrize(
+    "path",
+    [pytest.param(path, id=f"{name}-hashable-list") for name, path in SEQUENCE_CASES],
+)
+def test_hashable_mapping_elements_are_valid_inside_a_list(path: RawPath) -> None:
+    scenario_adapter = _scenario_contract_module().SCENARIO_ADAPTER
+
+    raw = _minimal_raw()
+    source_sequence = _get_raw_value(raw, path)
+    assert isinstance(source_sequence, list)
+    input_sequence = [_as_valid_set_element(item) for item in source_sequence]
+    if isinstance(source_sequence[0], dict):
+        assert isinstance(input_sequence[0], _HashableMapping)
+    _set_raw_value(raw, path, input_sequence)
+
+    scenario = scenario_adapter.validate_python(raw)
+    assert type(_get_model_value(scenario, path)) is tuple
+
+
+@pytest.mark.parametrize(
     ("kind", "path"),
     [
         pytest.param(kind, path, id=f"{kind}-{name}")
@@ -629,6 +649,10 @@ def test_sequence_fields_accept_only_exact_list_or_tuple(
     raw = _minimal_raw()
     source_sequence = _get_raw_value(raw, path)
     assert isinstance(source_sequence, list)
+    if kind == "set":
+        _set_raw_value(raw, path, deepcopy(source_sequence))
+        scenario_adapter.validate_python(raw)
+        raw = _minimal_raw()
     _set_raw_value(raw, path, _invalid_sequence(kind, source_sequence))
 
     with pytest.raises(ValidationError):
