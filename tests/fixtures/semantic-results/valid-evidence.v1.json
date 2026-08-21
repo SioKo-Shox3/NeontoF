@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "rulings": [],
+  "proposed_events": [],
+  "proposed_facts": [],
+  "knowledge_changes": [],
+  "visibility_changes": [],
+  "clarification_request": null,
+  "rejection": null,
+  "narrative_plan": [],
+  "narrative": "The door is already open.",
+  "mentioned_details": [],
+  "evidence": [
+    {
+      "claim": {
+        "fact_id": "fact:27cd642ddc52f1783e19c77e74c0f38a6bcf4ed9e8f200232704938d155b34d0:0",
+        "predicate": "is_open",
+        "value": true
+      }
+    }
+  ],
+  "suggested_actions": []
+}

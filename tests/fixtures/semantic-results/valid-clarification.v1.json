@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "rulings": [],
+  "proposed_events": [],
+  "proposed_facts": [],
+  "knowledge_changes": [],
+  "visibility_changes": [],
+  "clarification_request": {
+    "question": "Which gate do you mean?"
+  },
+  "rejection": null,
+  "narrative_plan": [],
+  "narrative": "I need one more detail before proceeding.",
+  "mentioned_details": [],
+  "evidence": [],
+  "suggested_actions": []
+}

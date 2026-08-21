@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "rulings": [],
+  "proposed_events": [],
+  "proposed_facts": [],
+  "knowledge_changes": [],
+  "visibility_changes": [],
+  "clarification_request": null,
+  "rejection": {
+    "reason": "The action cannot be resolved from the supplied details.",
+    "next_status": "awaiting_player"
+  },
+  "narrative_plan": [],
+  "narrative": "Please provide a different action.",
+  "mentioned_details": [],
+  "evidence": [],
+  "suggested_actions": []
+}

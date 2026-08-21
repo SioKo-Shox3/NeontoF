@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "rulings": [
+    {
+      "rule_refs": [],
+      "facts_used": [],
+      "interpretation": "The same proposal is referenced twice.",
+      "roll_spec": null,
+      "proposed_effects": [
+        {
+          "type": "event",
+          "index": 0
+        },
+        {
+          "type": "event",
+          "index": 0
+        }
+      ],
+      "is_house_ruling": false
+    }
+  ],
+  "proposed_events": [
+    {
+      "type": "ResourceChanged",
+      "payload": {
+        "resource_id": "resource:gold",
+        "entity_id": "entity:hero",
+        "delta": 2
+      }
+    },
+    {
+      "type": "ResourceChanged",
+      "payload": {
+        "resource_id": "resource:gold",
+        "entity_id": "entity:hero",
+        "delta": 2
+      }
+    }
+  ],
+  "proposed_facts": [],
+  "knowledge_changes": [],
+  "visibility_changes": [],
+  "clarification_request": null,
+  "rejection": null,
+  "narrative_plan": [],
+  "narrative": "",
+  "mentioned_details": [],
+  "evidence": [],
+  "suggested_actions": []
+}

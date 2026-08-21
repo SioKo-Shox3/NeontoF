@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "rulings": [],
+  "proposed_events": [
+    {
+      "type": "DiceRolled",
+      "payload": {}
+    }
+  ],
+  "proposed_facts": [],
+  "knowledge_changes": [],
+  "visibility_changes": [],
+  "clarification_request": null,
+  "rejection": null,
+  "narrative_plan": [],
+  "narrative": "",
+  "mentioned_details": [],
+  "evidence": [],
+  "suggested_actions": []
+}

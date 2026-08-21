@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "rulings": [],
+  "proposed_events": [
+    {
+      "type": "ResourceChanged",
+      "payload": {
+        "resource_id": "resource:gold",
+        "entity_id": "entity:hero",
+        "delta": 2
+      }
+    }
+  ],
+  "proposed_facts": [
+    {
+      "kind": "fact",
+      "holder": "world",
+      "subject_id": "entity:door",
+      "predicate": "is_open",
+      "value": true,
+      "visibility": "player_visible"
+    }
+  ],
+  "knowledge_changes": [],
+  "visibility_changes": [],
+  "clarification_request": null,
+  "rejection": null,
+  "narrative_plan": [],
+  "narrative": "The door opens, and two coins glint on the flagstones.",
+  "mentioned_details": [],
+  "evidence": [],
+  "suggested_actions": []
+}

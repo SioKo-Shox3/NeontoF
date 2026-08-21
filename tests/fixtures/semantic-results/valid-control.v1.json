@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "rulings": [],
+  "proposed_events": [],
+  "proposed_facts": [],
+  "knowledge_changes": [],
+  "visibility_changes": [],
+  "clarification_request": null,
+  "rejection": null,
+  "narrative_plan": [
+    {
+      "text": "Hold the scene at the gate."
+    }
+  ],
+  "narrative": "The lantern remains unlit beside the gate.",
+  "mentioned_details": [
+    {
+      "id": "entity:door",
+      "kind": "object",
+      "label": "wooden door",
+      "scene_id": "scene:hall",
+      "visibility": "player_visible"
+    }
+  ],
+  "evidence": [],
+  "suggested_actions": [
+    {
+      "label": "Inspect the latch."
+    }
+  ]
+}

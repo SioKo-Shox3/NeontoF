@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "rulings": [
+    {
+      "rule_refs": [],
+      "facts_used": [],
+      "interpretation": "The reference points outside the proposal list.",
+      "roll_spec": null,
+      "proposed_effects": [
+        {
+          "type": "event",
+          "index": 9
+        }
+      ],
+      "is_house_ruling": false
+    }
+  ],
+  "proposed_events": [],
+  "proposed_facts": [],
+  "knowledge_changes": [],
+  "visibility_changes": [],
+  "clarification_request": null,
+  "rejection": null,
+  "narrative_plan": [],
+  "narrative": "",
+  "mentioned_details": [],
+  "evidence": [],
+  "suggested_actions": []
+}
