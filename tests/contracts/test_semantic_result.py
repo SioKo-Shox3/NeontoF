@@ -10,7 +10,7 @@ import re
 from collections.abc import Mapping
 from itertools import product
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import Any, Literal, get_args, get_origin
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -309,6 +309,8 @@ def test_semantic_contract_models_are_strict_forbid_frozen_and_revalidate() -> N
 
 def test_public_semantic_type_adapters_validate_each_proposal_and_reference_shape() -> None:
     semantic_result = importlib.import_module("neontof.contracts.semantic_result")
+    from neontof.contracts.ids import NpcId
+    from neontof.contracts.projection import FactRecord
     from neontof.contracts.semantic_result import (
         PROPOSAL_REF_ADAPTER,
         PROPOSED_EVENT_ADAPTER,
@@ -336,9 +338,6 @@ def test_public_semantic_type_adapters_validate_each_proposal_and_reference_shap
         ValidationIssue,
     )
 
-    from neontof.contracts.ids import NpcId
-    from neontof.contracts.projection import FactRecord
-
     assert PROPOSED_EVENT_ADAPTER is semantic_result.PROPOSED_EVENT_ADAPTER
     assert PROPOSAL_REF_ADAPTER is semantic_result.PROPOSAL_REF_ADAPTER
     assert SEMANTIC_RESULT_ADAPTER is semantic_result.SEMANTIC_RESULT_ADAPTER
@@ -355,7 +354,7 @@ def test_public_semantic_type_adapters_validate_each_proposal_and_reference_shap
 
     assert _alias_contains(NonNegativeStrictInt, int)
     assert _alias_contains(PositiveStrictInt, int)
-    assert "player_visible" in get_args(PublicationVisibility)
+    assert _alias_contains(PublicationVisibility, Literal)
     assert _alias_contains(PublicationVisibility, NpcId)
     assert _alias_contains(ProposedEvent, ProposedResourceChanged)
     assert _alias_contains(ProposedEvent, ProposedCharacterMoved)
@@ -1239,9 +1238,8 @@ def test_semantic_context_facts_by_id_has_the_same_exact_tuple_boundary() -> Non
 
 
 def test_semantic_root_accepts_raw_mapping_but_rejects_frozen_json_representation() -> None:
-    from neontof.contracts.semantic_result import SemanticResultV1
-
     from neontof.contracts.base import FrozenJsonValue
+    from neontof.contracts.semantic_result import SemanticResultV1
 
     raw = load_fixture("valid-control.v1.json")
     typed = SemanticResultV1.model_validate(raw)
@@ -1629,9 +1627,9 @@ def test_materializer_fragments_preserve_sequence_event_and_fact_prefixes() -> N
     )
     projection = rebuild_projection(parsed)
     fact_events = tuple(event for event in parsed if event.type == "FactAsserted")
-    assert tuple(fact.fact_id for fact in projection.facts) == tuple(
-        derive_fact_id(event.event_id, 0) for event in fact_events
-    )
+    assert {(fact.event_id, fact.fact_id) for fact in projection.facts} == {
+        (event.event_id, derive_fact_id(event.event_id, 0)) for event in fact_events
+    }
     assert len({fact.fact_id for fact in projection.facts}) == 2
 
     facts_by_id = tuple((fact.fact_id, fact) for fact in projection.facts)

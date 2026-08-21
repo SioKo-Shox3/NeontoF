@@ -49,8 +49,8 @@ def test_transport_builders_accept_only_accepted_semantic_results() -> None:
         build_sse_frames,
     )
 
-    buffered_hints = get_type_hints(build_buffered_response)
-    sse_hints = get_type_hints(build_sse_frames)
+    buffered_hints = get_type_hints(build_buffered_response, include_extras=True)
+    sse_hints = get_type_hints(build_sse_frames, include_extras=True)
     assert buffered_hints["result"] is AcceptedSemanticResult
     assert sse_hints["result"] is AcceptedSemanticResult
     assert buffered_hints["return"] == tuple[TransportFrame, ...]
@@ -149,6 +149,7 @@ def test_turn_post_request_is_strict_frozen_and_keeps_input_at_request_boundary(
 
 
 def test_transport_frames_are_semantic_result_then_narrative_then_done() -> None:
+    from neontof.contracts.base import FrozenJsonValue
     from neontof.contracts.transport import (
         DoneFrame,
         NarrativeFrame,
@@ -156,8 +157,6 @@ def test_transport_frames_are_semantic_result_then_narrative_then_done() -> None
         build_buffered_response,
         build_sse_frames,
     )
-
-    from neontof.contracts.base import FrozenJsonValue
 
     accepted = _accepted_result()
     buffered = build_buffered_response(accepted)
