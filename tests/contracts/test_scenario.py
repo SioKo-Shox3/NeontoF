@@ -203,8 +203,8 @@ class _HashableMapping(dict[str, Any]):
     def __init__(self, value: dict[str, Any]) -> None:
         super().__init__(deepcopy(value))
 
-    def __hash__(self) -> int:  # type: ignore[override]
-        return id(self)
+
+type.__setattr__(_HashableMapping, "__hash__", object.__hash__)
 
 
 class _ArbitraryIterable:

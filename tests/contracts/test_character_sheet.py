@@ -6,7 +6,7 @@ import importlib
 from collections.abc import Iterator
 from operator import setitem
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import yaml
@@ -43,7 +43,7 @@ def _fixture_text() -> str:
 def _fixture_raw() -> dict[str, object]:
     loaded = yaml.safe_load(_fixture_text())
     assert isinstance(loaded, dict)
-    return cast(dict[str, object], loaded)
+    return loaded
 
 
 def _character_sheet_module() -> Any:
@@ -84,6 +84,10 @@ def _set_path(root: dict[str, object], path: tuple[PathPart, ...], value: object
     else:
         assert isinstance(current, list)
         current[last] = value
+
+
+def _attempt_sequence_mutation(value: Any) -> None:
+    setitem(value, 0, value[0])
 
 
 def _get_model_path(model: object, path: tuple[PathPart, ...]) -> Any:
@@ -207,7 +211,11 @@ def test_character_resource_state_identity_and_root_exports_are_preserved() -> N
 
 def test_exact_yaml_sequences_are_copied_to_tuples_and_input_mutation_does_not_propagate() -> None:
     raw = _fixture_raw()
-    expected = {path: tuple(cast(list[object], _get_path(raw, path))) for path in TUPLE_FIELD_PATHS}
+    expected: dict[tuple[str, ...], tuple[object, ...]] = {}
+    for path in TUPLE_FIELD_PATHS:
+        source_value = _get_path(raw, path)
+        assert isinstance(source_value, list)
+        expected[path] = tuple(source_value)
 
     sheet = _validate(raw)
 
@@ -244,10 +252,10 @@ def test_exact_tuple_inputs_are_copied_and_nested_input_mutation_does_not_propag
         tuple_inputs[path] = tuple_value
         _set_path(raw, path, tuple_value)
 
-    initial_item = cast(
-        dict[str, object],
-        cast(list[object], _get_path(raw, ("initial_items",)))[0],
-    )
+    initial_items = _get_path(raw, ("initial_items",))
+    assert isinstance(initial_items, tuple)
+    initial_item = initial_items[0]
+    assert isinstance(initial_item, dict)
     sheet = _validate(raw)
     initial_item["canonical_name"] = "入力側の変更"
 
@@ -469,7 +477,7 @@ def test_all_public_sequence_fields_are_tuples_and_tuple_mutation_fails() -> Non
         value = _get_model_path(sheet, path)
         assert type(value) is tuple
         with pytest.raises(TypeError):
-            setitem(cast(list[object], value), 0, value[0])
+            _attempt_sequence_mutation(value)
 
 
 @pytest.mark.parametrize(

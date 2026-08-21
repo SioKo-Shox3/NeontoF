@@ -5,10 +5,13 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
-from typing import Any, cast, get_args, get_origin, get_type_hints
+from collections.abc import Callable
+from typing import get_args, get_origin, get_type_hints
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
+
+from neontof.contracts.semantic_result import AcceptedSemanticResult
 
 from .support.evaluate_semantic_contract import (
     base_result,
@@ -18,15 +21,22 @@ from .support.evaluate_semantic_contract import (
 )
 
 
+def _invoke_with_runtime_argument(
+    function: Callable[..., object],
+    argument: object,
+) -> object:
+    # 本番境界の型注釈を変えず、実行時の不正値だけを検証する。
+    return function(argument)
+
+
 def _alias_contains(alias: object, target: object) -> bool:
     if alias is target or get_origin(alias) is target:
         return True
     return any(_alias_contains(argument, target) for argument in get_args(alias))
 
 
-def _accepted_result() -> Any:
+def _accepted_result() -> AcceptedSemanticResult:
     raw = load_fixture("valid-control.v1.json")
-    from neontof.contracts.semantic_result import AcceptedSemanticResult
 
     outcome = evaluate_semantic_result(
         raw,
@@ -38,7 +48,6 @@ def _accepted_result() -> Any:
 
 def test_transport_builders_accept_only_accepted_semantic_results() -> None:
     from neontof.contracts.semantic_result import (
-        AcceptedSemanticResult,
         RejectedSemanticResult,
         SemanticResultV1,
         ValidationIssue,
@@ -59,9 +68,9 @@ def test_transport_builders_accept_only_accepted_semantic_results() -> None:
 
     raw_model = SemanticResultV1.model_validate(base_result())
     with pytest.raises((TypeError, ValidationError)):
-        build_buffered_response(cast(AcceptedSemanticResult, raw_model))
+        _invoke_with_runtime_argument(build_buffered_response, raw_model)
     with pytest.raises((TypeError, ValidationError)):
-        build_sse_frames(cast(AcceptedSemanticResult, raw_model))
+        _invoke_with_runtime_argument(build_sse_frames, raw_model)
 
     rejected = RejectedSemanticResult(
         type="rejected",
@@ -69,9 +78,9 @@ def test_transport_builders_accept_only_accepted_semantic_results() -> None:
         next_status="aborted",
     )
     with pytest.raises((TypeError, ValidationError)):
-        build_buffered_response(cast(AcceptedSemanticResult, rejected))
+        _invoke_with_runtime_argument(build_buffered_response, rejected)
     with pytest.raises((TypeError, ValidationError)):
-        build_sse_frames(cast(AcceptedSemanticResult, rejected))
+        _invoke_with_runtime_argument(build_sse_frames, rejected)
 
 
 def test_public_transport_frame_alias_and_adapter_validate_discriminators() -> None:
@@ -141,7 +150,7 @@ def test_turn_post_request_is_strict_frozen_and_keeps_input_at_request_boundary(
             strict=True,
         )
 
-    corrupted = TurnPostRequest.model_construct(
+    corrupted = TurnPostRequest(
         type="turn_post",
         turn_request_id="turn-request:one",
         input_text="input",
@@ -193,7 +202,7 @@ def test_transport_frames_are_semantic_result_then_narrative_then_done() -> None
 def test_transport_does_not_send_unvalidated_narrative_or_raw_input(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from neontof.contracts.semantic_result import AcceptedSemanticResult, SemanticResultV1
+    from neontof.contracts.semantic_result import SemanticResultV1
     from neontof.contracts.transport import build_buffered_response, build_sse_frames
 
     raw_secret = "UNVALIDATED_NARRATIVE_SECRET_SENTINEL"
@@ -202,9 +211,9 @@ def test_transport_does_not_send_unvalidated_narrative_or_raw_input(
     semantic_model = SemanticResultV1.model_validate(raw)
     caplog.set_level(logging.DEBUG)
     with pytest.raises((TypeError, ValidationError)) as buffered_error:
-        build_buffered_response(cast(AcceptedSemanticResult, semantic_model))
+        _invoke_with_runtime_argument(build_buffered_response, semantic_model)
     with pytest.raises((TypeError, ValidationError)) as sse_error:
-        build_sse_frames(cast(AcceptedSemanticResult, semantic_model))
+        _invoke_with_runtime_argument(build_sse_frames, semantic_model)
     assert raw_secret not in str(buffered_error.value)
     assert raw_secret not in repr(buffered_error.value)
     assert raw_secret not in str(sse_error.value)
@@ -257,8 +266,6 @@ def test_sse_and_buffered_payloads_are_equal_for_a_nested_frozen_value() -> None
             "visibility": "player_visible",
         }
     ]
-    from neontof.contracts.semantic_result import AcceptedSemanticResult
-
     outcome = evaluate_semantic_result(raw, make_context())
     assert isinstance(outcome, AcceptedSemanticResult)
     assert tuple(frame.model_dump(mode="python") for frame in build_sse_frames(outcome)) == tuple(

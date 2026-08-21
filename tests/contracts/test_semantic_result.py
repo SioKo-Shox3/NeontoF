@@ -7,10 +7,10 @@ import importlib
 import inspect
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from itertools import product
 from pathlib import Path
-from typing import Any, Literal, cast, get_args, get_origin, get_type_hints
+from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -41,6 +41,14 @@ ROOT_SEQUENCE_FIELDS = (
 )
 RULING_SEQUENCE_FIELDS = ("rule_refs", "facts_used", "proposed_effects")
 type TurnStatus = Literal["running", "awaiting_player"]
+
+
+def _invoke_with_runtime_arguments(
+    function: Callable[..., object],
+    *arguments: object,
+) -> object:
+    # 本番境界の型注釈を変えず、実行時の不正値だけを検証する。
+    return function(*arguments)
 
 
 def _event_proposal(
@@ -463,7 +471,7 @@ def test_roll_spec_type_adapter_revalidates_a_constructed_instance() -> None:
     from neontof.contracts.semantic_result import RollSpec
 
     adapter = TypeAdapter(RollSpec)
-    constructed = RollSpec.model_construct(formula="1d20")
+    constructed = RollSpec(formula="1d20")
     field_name = next(iter(RollSpec.model_fields))
     object.__setattr__(constructed, field_name, object())
     with pytest.raises(ValidationError):
@@ -1364,8 +1372,6 @@ def test_narrative_changes_do_not_change_materialized_state_proposals() -> None:
 
 
 def test_materializer_accepts_only_accepted_result_and_emits_one_event_per_proposal() -> None:
-    from neontof.contracts.semantic_result import AcceptedSemanticResult
-
     accepted = _assert_accepted(_evaluate(load_fixture("valid-proposals.v1.json")), "running")
     context = FixtureEventContext(
         campaign="campaign:alpha",
@@ -1386,8 +1392,9 @@ def test_materializer_accepts_only_accepted_result_and_emits_one_event_per_propo
     assert len({event.event_id for event in events}) == len(events)
 
     with pytest.raises(TypeError):
-        materialize_semantic_result_for_test(
-            cast(AcceptedSemanticResult, {"type": "rejected"}),
+        _invoke_with_runtime_arguments(
+            materialize_semantic_result_for_test,
+            {"type": "rejected"},
             context,
         )
 

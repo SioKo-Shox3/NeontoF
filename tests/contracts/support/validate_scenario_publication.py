@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from neontof.contracts.base import ContractModel
 from neontof.contracts.ids import NpcId, Visibility
@@ -60,13 +60,13 @@ def _check_required_visibility(
 def _as_mapping(value: object) -> Mapping[str, object] | None:
     if not isinstance(value, Mapping):
         return None
-    return cast(Mapping[str, object], value)
+    return value
 
 
 def _as_sequence(value: object) -> Sequence[object] | None:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return None
-    return cast(Sequence[object], value)
+    return value
 
 
 def normalize_missing_visibility_for_test(

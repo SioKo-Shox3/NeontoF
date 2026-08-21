@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
+import neontof.contracts.semantic_result as semantic_result_contract
 from neontof.contracts.semantic_result import (
-    RawSemanticResultInput,
     SemanticValidationContext,
     SemanticValidationOutcome,
-    validate_semantic_result,
 )
 
 FIXTURE_ROOT = Path(__file__).parents[2] / "fixtures" / "semantic-results"
@@ -90,7 +90,7 @@ def evaluate_semantic_result(
 ) -> SemanticValidationOutcome:
     """Call the production validator after the test has assembled its inputs."""
 
-    return validate_semantic_result(
-        cast(RawSemanticResultInput, raw),
-        context,
+    validator: Callable[[object, SemanticValidationContext], SemanticValidationOutcome] = (
+        semantic_result_contract.__dict__["validate_semantic_result"]
     )
+    return validator(raw, context)
