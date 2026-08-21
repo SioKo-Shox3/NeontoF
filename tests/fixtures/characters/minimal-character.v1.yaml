@@ -1,0 +1,31 @@
+schema_version: 1
+id: character:hana
+canonical_name: "星野 花"
+aliases:
+  - "花"
+  - "ハナ"
+description: "森の境界を守る旅人。"
+hp:
+  current: 7
+  max: 10
+resource:
+  id: resource:stamina
+  label: "体力"
+  current: 3
+  max: 5
+initial_items:
+  - id: item:lantern
+    canonical_name: "古いランタン"
+initial_location_id: location:forest-edge
+visibility: player_visible
+speech_style:
+  first_person: "私"
+  second_person: "あなた"
+  endings:
+    - "です"
+    - "ます"
+  forbidden_patterns:
+    - "ひどい"
+ruleset:
+  id: ruleset:neontof-minimal-2d6-v1
+  action_modifier: 1
