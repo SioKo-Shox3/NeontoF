@@ -3397,10 +3397,13 @@ PositiveStrictInt、context_digestはLowercaseSha256で検証する。
   同一validated proposed Event Sequenceになることをtestする。
 - [ ] `tests/conftest.py`は編集せず、既存のautouse接続から全pytest sessionへ
   `tests/support/no_external_network.py`を適用し、`tests/test_no_external_network.py`で検証する。
-  `socket.socket`、`connect`、`connect_ex`、`send`、`sendall`、`sendto`、`socketpair`、
-  `create_connection`、`getaddrinfo`、`http.client`、`urllib`、`httpx`のguardをfail-fastへpatchし、
-  DNS解決も素通りさせない。srcの外部socket / API使用はpytest全体でFAILにする。P0-07専用testだけの
-  境界にしない。
+  外部network entrypointである`connect`、`connect_ex`、`sendto`、`getaddrinfo`、
+  `create_connection`、`http.client`、`urllib`、`httpx` transportを全pytest sessionでfail-fastへ
+  patchし、DNS解決も遮断する。例外は内部IPCだけであり、`socket.socketpair()`の生成と、その生成で得た
+  endpoint同士の`send` / `sendall`を許可する。これはWindowsでTestClient / ASGIのself-pipe / loopback
+  実装に必要な限定窓で、通常socketの送信や外部connectを許可するものではない。
+  `tests/test_no_external_network.py`の`test_socketpair_internal_send_methods_remain_allowed`と一致させ、
+  srcの外部socket / API使用はpytest全体でFAILにする。P0-07専用testだけの境界にしない。
 - [ ] `python -m pytest tests/model -q`のREDは上記の別シェルで、3 factory実装後のGreenは別シェルで
   記録する。
 - [ ] Narrativeだけを変えてもP0-04 materializerのEvent Sequenceは不変、proposed_events変更で
@@ -3521,7 +3524,7 @@ if ($secretExit -eq 0) { $secretHits; throw "secret or sentinel hit." }
 if ($secretExit -ne 1) { throw "secret scan failed with exit $secretExit." }
 $forbiddenRgPatterns = @(
     "publication_visibility.py", "filter_context_by_visibility", "ContextBuilder", "context_builder",
-    "openai", "anthropic", "provider_registry", "ProviderRegistry", "Capability", "Plugin", "Hook",
+    "openai", "anthropic", "provider_registry", "ProviderRegistry", "Capability", "Plugin",
     "Profile", "sqlite3.connect", "sqlite3.Connection", "strict=False", "payload: FrozenJsonValue"
 )
 foreach ($pattern in $forbiddenRgPatterns) {
@@ -3530,6 +3533,12 @@ foreach ($pattern in $forbiddenRgPatterns) {
     if ($forbiddenExit -eq 0) { $forbiddenHits; throw "forbidden rg hit '$pattern'." }
     if ($forbiddenExit -ne 1) { throw "forbidden rg failed for '$pattern' with exit $forbiddenExit." }
 }
+$hookAllowlist = @("object_pairs_hook")
+$hookTokens = @(rg -o --no-filename --pcre2 -i -- "(?<![A-Za-z0-9_])[A-Za-z_]*hook[A-Za-z0-9_]*" src/neontof)
+$hookScanExit = $LASTEXITCODE
+if ($hookScanExit -ne 0 -and $hookScanExit -ne 1) { throw "Hook identifier token scan tool failure with exit $hookScanExit." }
+$hookViolations = @($hookTokens | Where-Object { $hookAllowlist -notcontains $_ })
+if ($hookViolations.Count -gt 0) { $hookViolations; throw "forbidden Hook vocabulary found." }
 $networkHits = @(rg -n -- "socket\.(socket|create_connection|create_server|getaddrinfo)|http\.client|urllib\.(request|parse)|requests\.|httpx\.(Client|AsyncClient)|urlopen" src/neontof)
 $networkExit = $LASTEXITCODE
 if ($networkExit -eq 0) { $networkHits; throw "network source pattern hit." }
@@ -3546,12 +3555,15 @@ lowercase hexの順で得た`context_digest`と、test側にliteralで置いた�
 PASSはprovider test全成功、retry call count一致、P0-04 Accepted outcomeとmaterializerを通した
 Event Sequence deep equal、sanitized logに
 raw request / contextなし、filter正常、src/neontofとtests/fixturesにsecret・sentinelなし、
-openai・registry等なし、source network pattern 0件、全pytest sessionのautouse network禁止PASS、
+openai・registry等なし、allowlist外のHook語彙0件、source network pattern 0件、全pytest sessionのautouse network禁止PASS、
 `tests/test_no_external_network.py`のfocused test / setup-planがexit 0、DNSの`getaddrinfo`を含む
 socket / HTTP guardが全sessionで有効、API keyなし、network call 0である。Provider testはFake / Scripted / Recorded Fixtureだけで、
 OpenAI SDKはPhase 1候補のADR記録だけにする。
 このP0-07のproduction-only forbidden scanでもtestsのreject case語を許し、forbidden source patternの
-`rg`はexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとする。
+`rg`はexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとする。Hookは
+識別子tokenを抽出して`object_pairs_hook`だけをallowlistし、`LifecycleHook`、`hook_registry`、bare
+`Hook` alias / import / annotation / call / classを含むその他のHook語彙はfailとする。token scanは
+exit 0ならallowlist評価へ進み、exit 1ならzero-hit成功、exit 2以上ならtool failureとする。
 
 ### 13.6 Commit boundary、Gate証拠、rollback
 
