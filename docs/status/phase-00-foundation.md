@@ -8,7 +8,8 @@
 | date | 2026-08-21 |
 | branch | `docs/phase-00-foundation` |
 | scope | `Phase 0: Foundation Contracts`。この報告の書き込み対象は `docs/status/phase-00-foundation.md` のみ |
-| HEAD | `66f4fd2` |
+| Status Report作成直前の親コミット | `966f5e0` |
+| Status Report自身 | この文書をPhase 0の最終成果物としてcommitする（最終commit hashはcommit後に `git rev-parse HEAD` で確認） |
 | Phase 1 stopped | **停止**。Phase 1の実装・ファイル作成・自動遷移は行わない |
 
 この文書は ROADMAP §15.3 の Phase Status Report、Gate Check 結果、Test 結果、Known Issues、
@@ -50,8 +51,8 @@ P0-01〜P0-07の契約、Fake / Fixture、Projection、秘密境界、Non-goal a
 PASSした。`requirements.lock.txt` のfresh install、`pip check`、compile、format、lint、strict mypy、
 pytest、network guard、worker rejection、lifecycle、manifest、forbidden / secret scansは §5 の実測を参照する。
 
-remote CIは現在のHEAD `66f4fd2` に対して実行されていないため、remote Gateはpendingであり、
-local PASSをremote greenへ読み替えない。
+Status Report作成直前の親コミット `966f5e0` と、この文書を含む最終commitはpushしないため、対応する
+remote CI runは存在せず、remote Gateはpendingである。local PASSをremote greenへ読み替えない。
 
 ### Stop conditions — Phase停止条件は未発火
 
@@ -102,7 +103,7 @@ Python runtime、locked install、CI command order、single worker、health、ne
 
 **Known Issue**
 
-既存のdeprecation warningが1件（Starlette/httpx）残る。current HEADのremote CIは未実行でありpendingである。
+既存のdeprecation warningが1件（Starlette/httpx）残る。push禁止のため、この報告に対応するremote CIは未実行でありpendingである。
 
 **次WPとのinterface**
 
@@ -145,7 +146,7 @@ SQLite接続をまだ作らない境界を一意にした。
 
 **Known Issue**
 
-remote CI、実Provider call、Provider usage / timeout、migration実装、検索実装、Dockerは未確認またはPhase 0外である。
+remote CI（push禁止のため未実行・pending）、実Provider call、Provider usage / timeout、migration実装、検索実装、Dockerは未確認またはPhase 0外である。
 
 **次WPとのinterface**
 
@@ -508,10 +509,13 @@ allowlist=object_pairs_hook
 その他のscanは次のとおりである。`rg`のexit 1はzero-hitの成功である。
 
 ```text
+validation_bypass_rg_exit=1
+validation_bypass_hits=0
 secret_scan_exit=1 hits=0
 network_source_exit=1 hits=0
 sqlite_source_exit=1 hits=0
 lock_openai_exit=1 hits=0
+secret_network_sqlite_openai_hits=0
 OPENAI_API_KEY_present=False
 ANTHROPIC_API_KEY_present=False
 root_forbidden_count=0
@@ -546,28 +550,30 @@ Graceful shutdown timeout
 
 ```text
 entrypoint_lifecycle: first status=200 body={"status":"ok"} exit=0 stdout_length=0 stderr_length=0; rebind status=200 body={"status":"ok"} exit=0 stdout_length=0 stderr_length=0; rebind=success
+lifecycle_result=graceful_exit_0_rebind_health_200
 entrypoint_harness_exit=0
 ```
 
 ### 5.8 Line ending / scope
 
-この報告を追加した後、次を実行した。
+この修正の最終commit前に、次を実行した。
 
 ```text
 git diff --numstat
 git diff --ignore-cr-at-eol --numstat
-（両コマンドとも未追跡ファイルのため出力なし）
+（両コマンドのnumstatは一致）
 git status --short --untracked-files=all
-?? docs/status/phase-00-foundation.md
+ M docs/status/phase-00-foundation.md
 ```
 
-未追跡ファイルを含むstatusはこの1 pathだけであり、両numstatの出力は一致した。ファイル内容については
-UTF-8 BOMなし・CRLFなしをbyte検査で確認した。`AGENTS.md` / `CLAUDE.md`、
+最終commit前のstatusはこの1 pathだけであり、両numstatの出力は一致した。ファイル内容については
+UTF-8 BOMなし・CRLFなしをbyte検査で確認した。`AGENTS.md` / `CLAUDE.md`はequal（差分なし）。
 source、tests、plan、ADR、`docs/agent-guide`はこのStatus Report作成で編集していない。
+`check-scope`は既に1回実行済みであり、今回の修正では再実行していない。
 
 ## 6. Commit list
 
-Phase 0の履歴はP0-01〜P0-07の順で着地しており、current HEADまでの最終commitは次のとおりである。
+Phase 0の履歴はP0-01〜P0-07の順で着地しており、Status Report作成直前の親コミットまでの主なcommitは次のとおりである。
 
 ```text
 c7fc848 fix: P0-07の検証境界を実装へ同期する
@@ -575,6 +581,8 @@ c7fc848 fix: P0-07の検証境界を実装へ同期する
 a28f89a docs: Test ProviderとFixtureの安全境界を定義する
 0607851 fix: Hook allowlistの比較境界を固定する
 66f4fd2 docs: Hook allowlistの実測証拠を同期する
+6ae3c3f docs: Phase 0のGate証拠を記録する（Status Reportの初回commit）
+966f5e0 fix: テストの検証迂回を除去してGateを満たす
 ```
 
 P0-07 sourceの先行commitも全て存在する。
@@ -588,7 +596,7 @@ e705da7 feat: API不要のFake Providerを追加する
 dcfcf0f fix: P0-07 fixtureテストの型境界を補正する
 ```
 
-P0-01〜P0-06の主な履歴は各WP節のcommit列に記録した。Status Report自身はcommitしない。
+P0-01〜P0-06の主な履歴は各WP節のcommit列に記録した。Status Reportは最終成果物としてcommitする。
 commit境界はオーケストレーターが管理し、pushもしない。
 
 ## 7. Reviews
@@ -666,8 +674,8 @@ pushは行っていない。
 - full pytestに既存warningが2件ある。
   - Starlette/httpx deprecation: `fastapi\testclient.py` の `httpx` / `starlette.testclient` 境界。
   - Pydantic deprecation: `tests/contracts/test_event_parser.py` の instance `model_fields` access。
-- current HEAD `66f4fd2`はpushしていないため、current HEADに対するremote CI runはなくpendingである。
-  `gh run list`で見える履歴は `b9cfab0` の failureと `7b1fdc3` の successであり、current HEADのgreenではない。
+- push禁止のため、Status Report作成直前の親コミット `966f5e0` とこの文書を含む最終commitに対するremote CI runはなくpendingである。
+  `gh run list`で見える履歴は `b9cfab0` の failureと `7b1fdc3` の successであり、今回のlocal変更のgreenではない。
 - `docs/specs` required term evidenceはP0-07で19/19へ補正済み。残るnon-blockingはdocs table / link consistencyと
   `_ORIGINAL_GETADDRINFO`のdead valueである。
 - P0-03 / §15の古いbare Hook scan表記は、P0-07 canonical pathのallowlist検証と衝突しない。gardeningへ繰り越し、
@@ -680,6 +688,6 @@ pushは行っていない。
 
 **Phase 0 Gateはlocal PASS。remote CIはpending。Phase 1は未開始で、この時点で停止する。**
 
-このPhaseについて追加のhuman judgmentはない。Phase 1開始には、新しいユーザー指示と、必要ならcurrent HEADをremoteへ反映した
+このPhaseについて追加のhuman judgmentはない。Phase 1開始には、新しいユーザー指示と、必要ならこの成果物をremoteへ反映した後の
 CI結果の確認が必要である。Phase 0 Gateを通過したことを理由に、Phase 1のsource、tests、client、migrations、OpenAI SDK、
 実Provider、production Context Builderを先行作成しない。
