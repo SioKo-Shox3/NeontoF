@@ -1,0 +1,116 @@
+schema_version: 1
+id: scenario:minimal
+version: v1
+initial_scene:
+  id: scene:opening
+  location_id: location:gate
+  npc_ids:
+    - npc:warden
+    - npc:scholar
+  objective:
+    text: Reach the sealed observatory.
+    visibility: player_visible
+locations:
+  - id: location:gate
+    canonical_name: Observatory Gate
+    description: A rusted gate blocks the mountain path.
+    visibility: player_visible
+  - id: location:archive
+    canonical_name: Archive Room
+    description: The archive room is behind the gate.
+    visibility: gm_only
+  - id: location:tower
+    canonical_name: Astral Tower
+    description: The tower rises above the cloud line.
+    visibility: npc:warden
+  - id: location:courtyard
+    canonical_name: Silent Courtyard
+    description: A quiet courtyard surrounds the observatory.
+    visibility: player_visible
+npcs:
+  - id: npc:warden
+    canonical_name: Gate Warden
+    aliases:
+      - the warden
+      - gatekeeper
+    goal:
+      text: The warden protects the hidden chamber.
+    knowledge:
+      - text: The warden recognizes the old seal.
+        visibility: npc:warden
+      - text: The warden remembers a hidden stair.
+        visibility: gm_only
+  - id: npc:scholar
+    canonical_name: Visiting Scholar
+    aliases:
+      - archivist
+    goal:
+      text: Find the observatory records.
+      visibility: player_visible
+    knowledge:
+      - text: The scholar can read the faded inscription.
+        visibility: player_visible
+      - text: The scholar suspects the records were moved.
+        visibility: npc:scholar
+  - id: npc:merchant
+    canonical_name: Road Merchant
+    aliases:
+      - peddler
+    goal:
+      text: Keep the sealed map hidden.
+      visibility: gm_only
+    knowledge:
+      - text: The merchant traded for a silver key.
+        visibility: gm_only
+      - text: The merchant has seen the warden at night.
+        visibility: npc:warden
+world_invariants:
+  - id: invariant:seal-closed
+    statement: The observatory seal remains closed at the start.
+    visibility: player_visible
+  - id: invariant:map-hidden
+    statement: The sealed map is hidden from ordinary visitors.
+    visibility: gm_only
+secret:
+  id: secret:inner-chamber
+  text: The inner chamber is sealed from visitors.
+  visibility: gm_only
+clues:
+  - id: clue:broken-seal
+    text: Scratches mark the old seal.
+    location_ids:
+      - location:gate
+      - location:archive
+    visibility: player_visible
+  - id: clue:astral-mark
+    text: A star-shaped mark appears on the archive door.
+    location_ids:
+      - location:archive
+      - location:tower
+    visibility: gm_only
+  - id: clue:silver-key
+    text: A silver key lies beneath the tower stairs.
+    location_ids:
+      - location:tower
+    visibility: npc:warden
+clock:
+  id: clock:pressure
+  label: Security pressure
+  segments: 6
+  initial: 0
+  visibility: player_visible
+end_conditions:
+  - type: clues_discovered
+    id: end-condition:seal-opened
+    outcome: success
+    clue_ids:
+      - clue:broken-seal
+      - clue:astral-mark
+      - clue:silver-key
+    visibility: player_visible
+  - type: clock_reached
+    id: end-condition:guard-alert
+    outcome: failure
+    clock_id: clock:pressure
+    value: 6
+    visibility: player_visible
