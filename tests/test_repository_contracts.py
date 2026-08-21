@@ -123,19 +123,30 @@ def test_repository_contracts_fix_production_manifest_and_forbidden_paths() -> N
     production_files = sorted(
         path.relative_to(PRODUCTION_ROOT).as_posix() for path in PRODUCTION_ROOT.rglob("*.py")
     )
-    assert production_files == [
-        "__init__.py",
-        "app.py",
-        "config.py",
-        "contracts/__init__.py",
-        "contracts/base.py",
-        "contracts/domain.py",
-        "contracts/event_parser.py",
-        "contracts/ids.py",
-        "contracts/projection.py",
-        "contracts/turn_status.py",
-        "main.py",
-    ]
+    assert production_files == sorted(
+        [
+            "__init__.py",
+            "main.py",
+            "config.py",
+            "app.py",
+            "contracts/__init__.py",
+            "contracts/base.py",
+            "contracts/ids.py",
+            "contracts/domain.py",
+            "contracts/event_parser.py",
+            "contracts/projection.py",
+            "contracts/turn_status.py",
+            "contracts/semantic_result.py",
+            "contracts/transport.py",
+            "contracts/character_sheet.py",
+            "contracts/scenario.py",
+            "model/__init__.py",
+            "model/model_invoker.py",
+            "model/fake_provider.py",
+            "model/scripted_provider.py",
+            "model/recorded_fixture.py",
+        ]
+    )
 
     forbidden_names = {
         "package.json",
