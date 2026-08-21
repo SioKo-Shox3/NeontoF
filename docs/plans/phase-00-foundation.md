@@ -925,7 +925,7 @@ CI quality jobはlocalと同じ順序を固定する。
 Gate証拠はversion assert、fresh install、pip check、compileall、ruff、mypy、pytest、
 `pip-tools (7.6.1)`のTEMP tool venv、固定pip-compile、requirements direct root set集合一致、
 openai不在、health JSON、HTTP status、graceful exit code 0、PID終了、rebind後の2回目health、
-stdout / stderr、CI failure / green run、sqlite3接続0件とする。MyWorkflow側の3ファイルcommitと
+stdout / stderr、CI failure-probeのnon-zero検出とremote CIの状態（未確認はpending）、sqlite3接続0件とする。MyWorkflow側の3ファイルcommitと
 展開差分0はNeontoFのcommitとは別の証拠として記録する。
 
 ---
@@ -1783,7 +1783,7 @@ try {
     Remove-Item -LiteralPath 'Env:ANTHROPIC_API_KEY' -ErrorAction SilentlyContinue
     if ((Test-Path -LiteralPath 'Env:OPENAI_API_KEY') -or (Test-Path -LiteralPath 'Env:ANTHROPIC_API_KEY')) { throw "API key variable remained in the test process." }
 
-    New-Item -ItemType Directory -LiteralPath $freshRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $freshRoot -Force | Out-Null
     py -3.14 --version
     $pythonVersionExit = $LASTEXITCODE
     if ($pythonVersionExit -ne 0) { throw "Python version check failed with exit $pythonVersionExit." }
@@ -1860,12 +1860,20 @@ sqlite connection / network / validation bypass / manifest外sourceを0件にす
 verificationのsource scanは§15の20件専用blockを使う。
 P0-01bで確定した期待出力は`No broken requirements found.`、network test成功、
 `entrypoint_lifecycle=graceful_exit_0_rebind_health_200`、`workers=2 exit 2`であり、未確認の
-remote CIは成功と扱わずpendingにする。
+remote CIはpush禁止のためこの計画から実行せず、未確認ならpendingで止め、成功扱いにしない。
 
 P0-03実測後、MyWorkflow正本
 `C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\agent-guide\build-and-verify.md`
 を別branch / 別commitで更新する。そこへactual commandを反映した後、MyWorkflow rootで
 次の絶対pathだけでapply、report、hash、mirrorを実行する。
+
+このmirror検証では、MyWorkflow source側の
+`C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\CLAUDE.md`だけを正本とする。
+source側には`AGENTS.md`が存在しないため、その存在は要求しない。deployed NeontoF側の
+`AGENTS.md`と`CLAUDE.md`はsource側の`CLAUDE.md`をそれぞれミラーしたものとして、3ファイルの
+存在を必須にし、sourceからdeployedへの比較とdeployed内の比較がすべて一致した場合だけ成功とする。
+欠落・不一致・比較時の読み取り失敗はfail-closedでFAILとする。この比較の意味は、source側の正本が
+deployed側の2つのミラーへ同じ内容で展開されたことを検証することである。
 
 ~~~powershell
 $myWorkflowRoot = 'C:\Users\KINGkawamura\Documents\MyWorkflow'
@@ -1884,36 +1892,30 @@ node C:\Users\KINGkawamura\Documents\MyWorkflow\deploy.mjs NeontoF
 $reportExit = $LASTEXITCODE
 if ($reportExit -ne 0) { throw "MyWorkflow deploy report failed with exit $reportExit." }
 
-$sourceAgents = 'C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\AGENTS.md'
 $sourceClaude = 'C:\Users\KINGkawamura\Documents\MyWorkflow\projects\NeontoF\CLAUDE.md'
 $deployedAgents = 'C:\Users\KINGkawamura\Documents\NeontoF\AGENTS.md'
 $deployedClaude = 'C:\Users\KINGkawamura\Documents\NeontoF\CLAUDE.md'
-foreach ($path in @($sourceAgents, $sourceClaude, $deployedAgents, $deployedClaude)) {
+foreach ($path in @($sourceClaude, $deployedAgents, $deployedClaude)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Mirror file was not found: $path" }
 }
-$sourceAgentsHash = (Get-FileHash -LiteralPath $sourceAgents -Algorithm SHA256).Hash
-$sourceAgentsHashExit = 0
-$sourceClaudeHash = (Get-FileHash -LiteralPath $sourceClaude -Algorithm SHA256).Hash
+$sourceClaudeHash = (Get-FileHash -LiteralPath $sourceClaude -Algorithm SHA256 -ErrorAction Stop).Hash
 $sourceClaudeHashExit = 0
-$deployedAgentsHash = (Get-FileHash -LiteralPath $deployedAgents -Algorithm SHA256).Hash
+$deployedAgentsHash = (Get-FileHash -LiteralPath $deployedAgents -Algorithm SHA256 -ErrorAction Stop).Hash
 $deployedAgentsHashExit = 0
-$deployedClaudeHash = (Get-FileHash -LiteralPath $deployedClaude -Algorithm SHA256).Hash
+$deployedClaudeHash = (Get-FileHash -LiteralPath $deployedClaude -Algorithm SHA256 -ErrorAction Stop).Hash
 $deployedClaudeHashExit = 0
-if ($sourceAgentsHash -ne $deployedAgentsHash -or $sourceClaudeHash -ne $deployedClaudeHash) { throw 'source/deployed AGENTS or CLAUDE hash mismatch.' }
+if ($sourceClaudeHash -ne $deployedAgentsHash -or $sourceClaudeHash -ne $deployedClaudeHash) { throw 'source CLAUDE.md / deployed AGENTS.md / deployed CLAUDE.md hash mismatch.' }
 
-$sourceMirror = Compare-Object -ReferenceObject (Get-Content -LiteralPath $sourceAgents) -DifferenceObject (Get-Content -LiteralPath $sourceClaude)
-$sourceMirrorExit = if ($null -eq $sourceMirror) { 0 } else { 1 }
-if ($sourceMirrorExit -ne 0) { throw 'source AGENTS.md / CLAUDE.md mirror mismatch.' }
-$deployedMirror = Compare-Object -ReferenceObject (Get-Content -LiteralPath $deployedAgents) -DifferenceObject (Get-Content -LiteralPath $deployedClaude)
+$deployedMirror = Compare-Object -ReferenceObject (Get-Content -LiteralPath $deployedAgents -ErrorAction Stop) -DifferenceObject (Get-Content -LiteralPath $deployedClaude -ErrorAction Stop)
 $deployedMirrorExit = if ($null -eq $deployedMirror) { 0 } else { 1 }
 if ($deployedMirrorExit -ne 0) { throw 'deployed AGENTS.md / CLAUDE.md mirror mismatch.' }
-$sourceToDeployedAgents = Compare-Object -ReferenceObject (Get-Content -LiteralPath $sourceAgents) -DifferenceObject (Get-Content -LiteralPath $deployedAgents)
+$sourceToDeployedAgents = Compare-Object -ReferenceObject (Get-Content -LiteralPath $sourceClaude -ErrorAction Stop) -DifferenceObject (Get-Content -LiteralPath $deployedAgents -ErrorAction Stop)
 $sourceToDeployedAgentsExit = if ($null -eq $sourceToDeployedAgents) { 0 } else { 1 }
-if ($sourceToDeployedAgentsExit -ne 0) { throw 'source/deployed AGENTS.md mismatch.' }
-$sourceToDeployedClaude = Compare-Object -ReferenceObject (Get-Content -LiteralPath $sourceClaude) -DifferenceObject (Get-Content -LiteralPath $deployedClaude)
+if ($sourceToDeployedAgentsExit -ne 0) { throw 'source CLAUDE.md / deployed AGENTS.md mismatch.' }
+$sourceToDeployedClaude = Compare-Object -ReferenceObject (Get-Content -LiteralPath $sourceClaude -ErrorAction Stop) -DifferenceObject (Get-Content -LiteralPath $deployedClaude -ErrorAction Stop)
 $sourceToDeployedClaudeExit = if ($null -eq $sourceToDeployedClaude) { 0 } else { 1 }
-if ($sourceToDeployedClaudeExit -ne 0) { throw 'source/deployed CLAUDE.md mismatch.' }
-"apply=$applyExit; report=$reportExit; source-agents-hash=$sourceAgentsHashExit; source-claude-hash=$sourceClaudeHashExit; deployed-agents-hash=$deployedAgentsHashExit; deployed-claude-hash=$deployedClaudeHashExit; source-mirror=$sourceMirrorExit; deployed-mirror=$deployedMirrorExit; source-to-deployed-agents=$sourceToDeployedAgentsExit; source-to-deployed-claude=$sourceToDeployedClaudeExit"
+if ($sourceToDeployedClaudeExit -ne 0) { throw 'source CLAUDE.md / deployed CLAUDE.md mismatch.' }
+"apply=$applyExit; report=$reportExit; source-claude-hash=$sourceClaudeHashExit; deployed-agents-hash=$deployedAgentsHashExit; deployed-claude-hash=$deployedClaudeHashExit; deployed-mirror=$deployedMirrorExit; source-to-deployed-agents=$sourceToDeployedAgentsExit; source-to-deployed-claude=$sourceToDeployedClaudeExit"
 ~~~
 
 MyWorkflow source rootは`C:\Users\KINGkawamura\Documents\MyWorkflow`、scriptは
@@ -2638,7 +2640,11 @@ def _copy_exact_yaml_sequence(value: object) -> object: ...
 であり、FactまたはtextのVisibilityと混同しない。Character Sheet全体の必須`visibility`が
 初期状態の公開範囲を表す。strict / extra forbid / frozen / `revalidate_instances="always"`で
 文字列数値coercion、unknown field、mutation、再検証時の不正なnested instanceをrejectする。
-初期fileの修正で既存Campaign状態を変えず、Campaign開始時のEvent snapshotが権威である。
+**Event normalization rule (P0-05の実装対象外):** `CharacterSheetV1`はCampaign開始前の検証済み入力に限る。
+Campaign開始前に、後続のapplication contractが`CharacterSheetV1`から明示的なEvent snapshot mappingを作成し、
+Eventへ変換する。その後はEvent Logがゲーム状態の唯一の権威であり、YAMLは並行する権威にならない。P0-05は
+Eventを作成・appendしない。P0-03の既存Event unionでauthoritative fieldをすべて表現できない場合は、Phase 1で
+loaderを実装する前にdomain/planを改訂する。ここでEventを追加しない。
 `SpeechStyle`は省略またはnullを許可し、存在する場合だけ全fieldを検証する。
 
 `ResourceState`はP0-03の`Projection.ResourceState`と同名だが、root `contracts.__init__`へ
@@ -2666,7 +2672,17 @@ module-qualified参照だけを使い、root exportの衝突を作らない。
   unexpected pass、ImportErrorなどはFAILとする。production module着地後の別シェルでGreenを実行し、
   REDを再実行せずfocused testをexit=0で確認する。
 - [ ] 日本語Name / AliasのUTF-8 round-tripをPASSさせる。
-- [ ] src/neontofのyaml / safe_load検索が0件である。
+- [ ] production forbidden source scanは`src/neontof/contracts/character_sheet.py`だけを対象に、
+  `import yaml`、`safe_load`、`yaml.load`、`unsafe loader`、`read_text`、`read_bytes`、`write_text`、
+  `write_bytes`、`open`、`filesystem read`、`strict=False`、`publication_visibility.py`の実行時 / I/O
+  patternが0件である。`_copy_exact_yaml_sequence`のhelper名とfixture / docsのsafe_load説明はproduction
+  I/Oではないため、これらを禁止hitとして扱わない。
+
+**Event normalization rule:** `CharacterSheetV1`はCampaign開始前の検証済み入力に限り、後続のapplication
+contractがCampaign開始前に明示的なEvent snapshot mappingを作成してEventへ変換する。その後はEvent Logが
+唯一の権威であり、YAMLは並行する権威にならない。P0-05はEventを作成・appendしない。P0-03の既存Event unionで
+authoritative fieldをすべて表現できない場合は、Phase 1でloaderを実装する前にdomain/planを改訂し、ここで
+Eventを追加しない。
 
 ~~~powershell
 # RED: 別のfresh PowerShell。fixture / focused test追加済み、production module着地前。
@@ -2749,7 +2765,12 @@ foreach ($term in $requiredRgTerms) {
     $termHits
     if ($termExit -ne 0) { throw "required rg term '$term' failed with exit $termExit." }
 }
-$forbiddenRgPatterns = @("yaml", "safe_load", "strict=False", "publication_visibility.py")
+# `_copy_exact_yaml_sequence`のhelper名とfixture / docsのsafe_load説明はproduction I/Oではないため、
+# production forbidden source scanでは実行時 / I/O patternだけを対象にする。
+$forbiddenRgPatterns = @(
+    "import yaml", "safe_load", "yaml.load", "unsafe loader", "read_text", "read_bytes",
+    "write_text", "write_bytes", "open", "filesystem read", "strict=False", "publication_visibility.py"
+)
 foreach ($pattern in $forbiddenRgPatterns) {
     $forbiddenHits = @(rg -ni --fixed-strings -- $pattern src/neontof/contracts/character_sheet.py)
     $forbiddenExit = $LASTEXITCODE
@@ -2773,7 +2794,14 @@ hunkはP0-07後の唯一の統合manifest commitへ送る。
 Gate証拠はPyYAML=6.0.3、safe_load=utf8_and_mapping_pass、exact list / tupleのprivate
 BeforeValidatorと任意Iterable拒否、valid / invalid fixture、field path、required Visibility、
 speech_styleの省略/null、module-qualified ResourceState、strict / frozen / revalidation sabotage、
-日本語round-trip、src YAML I/O検索0件、exact sequence対象全field、入力mutation非伝播とする。
+日本語round-trip、production forbidden source scan（`import yaml`、`safe_load`、`yaml.load`、`unsafe loader`、
+`read_text`、`read_bytes`、`write_text`、`write_bytes`、`open`、`filesystem read`、`strict=False`、
+`publication_visibility.py`）0件、exact sequence対象全field、入力mutation非伝播とする。`_copy_exact_yaml_sequence`
+のhelper名とfixture / docsのsafe_load説明はproduction I/Oではないため、このscanの禁止hitに含めない。
+Event normalizationはP0-05のGate実装対象外であり、`CharacterSheetV1`はCampaign開始前の検証済み入力に限る。
+Campaign開始前に後続のapplication contractが明示的なEvent snapshot mappingを作成してEventへ変換し、その後はEvent Logが唯一の
+権威、YAMLは並行権威なし、P0-05はEventを作成・appendしない。P0-03の既存Event unionでauthoritative fieldを
+表現できない場合は、Phase 1でloader実装前にdomain/planを改訂し、ここでEventを追加しない。
 
 ---
 
@@ -2814,6 +2842,8 @@ tupleへcopyする。tuple subclass、任意Iterable、generator、setは受理�
 入力sequenceをmutateしてもmodelへ伝播しない。検証を緩和する設定は使わず、
 production loaderも作らない。上記Test Firstに列挙した全tuple fieldは、型注釈へprivate
 `BeforeValidator`を適用する。
+`_copy_exact_yaml_sequence`というhelper名、およびfixture / docsに記載したsafe_loadの説明はproduction
+I/Oではない。P0-06のproduction forbidden source scanは、実行時 / I/O patternだけを対象にする。
 
 P0-06で着地させるproduction sourceは`src/neontof/contracts/scenario.py`だけである。
 production loaderや別のmanifest fileは作らない。production manifestはP0-07まで全て着地した
@@ -3005,7 +3035,11 @@ Secret、secret sentinelを保持しない。
   明示的に終了する。file not found、SyntaxError、collection error、0 tests、unexpected pass、
   ImportErrorなどはFAILとする。production module着地後の別シェルでGreenを実行し、REDを再実行せず
   focused testをexit=0で確認する。secret sentinelをpublic subsetへ出さないtestを入れる。
-- [ ] src/neontofのyaml / safe_load検索が0件である。
+- [ ] production forbidden source scanは`src/neontof/contracts/scenario.py`だけを対象に、
+  `import yaml`、`safe_load`、`yaml.load`、`unsafe loader`、`read_text`、`read_bytes`、`write_text`、
+  `write_bytes`、`open`、`filesystem read`、`strict=False`、`publication_visibility.py`の実行時 / I/O
+  patternが0件である。`_copy_exact_yaml_sequence`のhelper名とfixture / docsのsafe_load説明はproduction
+  I/Oではないため、これらを禁止hitとして扱わない。
 
 ~~~powershell
 # RED: 別のfresh PowerShell。fixtures / focused test追加済み、production module着地前。
@@ -3089,7 +3123,12 @@ foreach ($term in $requiredRgTerms) {
     $termHits
     if ($termExit -ne 0) { throw "required rg term '$term' failed with exit $termExit." }
 }
-$forbiddenRgPatterns = @("yaml", "safe_load", "strict=False", "publication_visibility.py")
+# `_copy_exact_yaml_sequence`のhelper名とfixture / docsのsafe_load説明はproduction I/Oではないため、
+# production forbidden source scanでは実行時 / I/O patternだけを対象にする。
+$forbiddenRgPatterns = @(
+    "import yaml", "safe_load", "yaml.load", "unsafe loader", "read_text", "read_bytes",
+    "write_text", "write_bytes", "open", "filesystem read", "strict=False", "publication_visibility.py"
+)
 foreach ($pattern in $forbiddenRgPatterns) {
     $forbiddenHits = @(rg -ni --fixed-strings -- $pattern src/neontof/contracts/scenario.py)
     $forbiddenExit = $LASTEXITCODE
@@ -3113,8 +3152,11 @@ P0-07後の唯一の統合manifest commitへ送る。
 Gate証拠はrequired Visibility schema、missing_visibilityへの安全な正規化、source上のgm_only受理、
 candidate混入時だけのinvisible_scenario_content、unknown_npc_visibility、public projectionの除外、
 success / failure exactly 1、count / reference / duplicate ID、strict / frozen / revalidation sabotage、
-exact list / tupleの全対象field、入力mutation非伝播、正常系、safe_load evidence、production YAML I/O
-検索0件とする。P0-05 / P0-04と独立してrevertでき、manifestは統合時だけ扱う。
+exact list / tupleの全対象field、入力mutation非伝播、正常系、safe_load evidence、production forbidden source scan
+（`import yaml`、`safe_load`、`yaml.load`、`unsafe loader`、`read_text`、`read_bytes`、`write_text`、
+`write_bytes`、`open`、`filesystem read`、`strict=False`、`publication_visibility.py`）0件とする。
+`_copy_exact_yaml_sequence`のhelper名とfixture / docsのsafe_load説明はproduction I/Oではないため、このscanの
+禁止hitに含めない。P0-05 / P0-04と独立してrevertでき、manifestは統合時だけ扱う。
 
 ---
 
@@ -3142,13 +3184,31 @@ real Provider、OpenAI SDK、raw実Responseも作らない。
 - src/neontof/model/fake_provider.py — 固定responseまたはerrorのfactory。
 - src/neontof/model/scripted_provider.py — step列とinstance-local call log。
 - src/neontof/model/recorded_fixture.py — sanitized JSON fixture load / validate。networkなし。
+- tests/model/__init__.py — test-only package marker。production exportを持たない。
+- tests/model/support/__init__.py — test-only support namespace。production exportを持たない。
 - tests/model/support/filter_context_by_visibility.py — test-only Context / Visibility filter。
-- tests/model/test_fake_provider.py、test_scripted_provider.py、test_recorded_fixture.py、
-  test_provider_security.py。
 - tests/model/support/run_invocation_scenario.py — test-only driver。P0-04のvalidation oracleと
   materializerを呼び出し、Semantic Resultの重複helperを作らない。
-- tests/fixtures/providers/normal-turn.v1.json、model-error.v1.json、timeout.v1.json、
-  invalid-json.v1.json、retry-then-success.v1.json、sanitized-call-log.v1.json。
+- tests/model/test_fake_provider.py — Fake Providerの固定response / errorを検証するfocused test。
+- tests/model/test_scripted_provider.py — step順、call count / order、script exhaustionを検証するfocused test。
+- tests/model/test_recorded_fixture.py — JSON bytesからtyped payloadへ検証するFixture test。
+- tests/model/test_provider_security.py — sanitized call log、digest、exception mapping、secret境界を検証するfocused test。
+- tests/fixtures/providers/normal-turn.v1.json — successの6 Fixtureの一つ。
+- tests/fixtures/providers/model-error.v1.json — model errorの6 Fixtureの一つ。
+- tests/fixtures/providers/timeout.v1.json — timeoutの6 Fixtureの一つ。
+- tests/fixtures/providers/invalid-json.v1.json — invalid JSONの6 Fixtureの一つ。
+- tests/fixtures/providers/retry-then-success.v1.json — retry後successの6 Fixtureの一つ。
+- tests/fixtures/providers/sanitized-call-log.v1.json — sanitized call logの6 Fixtureの一つ。
+- tests/support/no_external_network.py — 既存の全pytest session用test support guard。P0-07で既存guardを補正する。
+- tests/test_no_external_network.py — 既存guardの全session適用とDNS / HTTP / socket遮断を検証するtest。
+
+上記16件をP0-07のtest support scopeとして扱う。`tests/conftest.py`は編集せず、既存のautouse接続から
+全pytest sessionへguardを適用する。`context_digest`のcanonical preimageは、`request.context`の
+`tuple[FactRecord, ...]`を`[fact.model_dump(mode="json") for fact in request.context]`というJSON arrayへ
+し、`json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",", ":"))`で直列化したUTF-8 bytesを
+SHA-256へ渡し、lowercase hexで固定する。`model_call_id`、`turn_id`、`roles`、
+`publication_visibility`はdigestへ含めない。固定vectorと期待digestはtest側へliteralで置き、production
+helperから期待値を生成しない。
 
 P0-07のproduction sourceは上記の`model/__init__.py`、`model_invoker.py`、`fake_provider.py`、
 `scripted_provider.py`、`recorded_fixture.py`だけである。`src/neontof/model/publication_visibility.py`
@@ -3169,6 +3229,13 @@ class ModelRequest(ContractModel):
     context: tuple[FactRecord, ...]
     output_schema: Literal["semantic-result-v1"]
     # API key、secret、credential、SecretStore参照値をfieldに持たない
+
+# context_digestのcanonical preimage。期待値はproduction helperから生成せず、test側のliteral vectorで固定する。
+# json.dumps(
+#     [fact.model_dump(mode="json") for fact in request.context],
+#     ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+# ).encode("utf-8") を SHA-256 へ渡し、lowercase hexを得る。
+# model_call_id / turn_id / roles / publication_visibility はdigestへ含めない。
 
 class ModelUsage(ContractModel):
     input_tokens: NonNegativeStrictInt
@@ -3196,6 +3263,12 @@ class TimeoutStep(ContractModel):
 class InvalidJsonStep(ContractModel):
     type: Literal["invalid_json"]
     body: str
+
+# driverのfailure exception mapping。
+# ModelErrorStep -> RuntimeError("model invocation failed")
+# TimeoutStep -> TimeoutError("model invocation timed out")
+# InvalidJsonStep -> ValueError("model response JSON is invalid")
+# script exhaustion -> RuntimeError("script exhausted")
 
 ProviderStep: TypeAlias = Annotated[
     SuccessStep | ModelErrorStep | TimeoutStep | InvalidJsonStep,
@@ -3256,6 +3329,13 @@ FactのVisibilityを完全一致で比較し、playerには`player_visible`だ�
 返し、`gm_only`と対象外NPCを返さない。Context Builder、Prompt生成、OpenAI request mappingは
 Phase 1に残す。production sourceへfilter関数やContext Builderを移さない。
 
+driverは上記のfailure exceptionを捕捉し、ModelErrorStepを`error_code="model_error"` /
+`status="failed"`、TimeoutStepを`error_code="timeout"` / `status="timed_out"`、InvalidJsonStepを
+`error_code="invalid_json"` / `status="rejected"`、script exhaustionを
+`error_code="script_exhausted"` / `status="rejected"`へsanitizedに写像する。`code`、`body`、`message`、
+その他のraw errorはexception messageにもcall logにも漏らさない。これらのfailureでは
+`ModelResponse`もEventも作らない。
+
 fixture loaderはraw fixtureのJSON `bytes`を読み、JSON object / arrayをmapping / listとして
 losslessにdecodeする（duplicate key、array順、scalar型を変形しない）。success stepのpayloadは
 fixture内のpayload JSON bytesを取り出して`SEMANTIC_RESULT_ADAPTER.validate_json(payload_bytes)`へ
@@ -3288,6 +3368,9 @@ PositiveStrictInt、context_digestはLowercaseSha256で検証する。
   ImportErrorなどはFAILとする。production module着地後の別シェルでGreenを実行し、REDを再実行せず
   focused testsをexit=0で確認する。fixed success、model error、timeout、invalid JSON、retry-then-success、
   script exhaustをtestに書く。
+- [x] 実装着手前の設計blocking解消を記録する。Humeの設計上の39 tests / 6 fixtures、固定digest、
+  failure exception mapping、networkの`getaddrinfo`遮断を根拠とし、この項目は実装後のpytest結果ではなく
+  Test First設計の入口Gateを満たしたことを示す。
 - [ ] success fixture loaderがJSON bytesからsuccess payload bytesを取り出し、
   `SEMANTIC_RESULT_ADAPTER.validate_json`で検証した`SemanticResultV1`だけを
   `ModelResponse.payload`へ格納する。JSON object / arrayをlosslessに保ち、tuple-of-pairs rootや
@@ -3299,14 +3382,25 @@ PositiveStrictInt、context_digestはLowercaseSha256で検証する。
   testする。
 - [ ] token countはNonNegativeStrictInt、attemptはPositiveStrictInt、context_digestは
   LowercaseSha256とし、bool、負数、0 attempt、文字列数値、uppercase / short digestをrejectする。
+- [ ] `request.context`の固定digest vectorをtest側のliteralで検証する。期待digestは
+  `[fact.model_dump(mode="json") for fact in request.context]`、`json.dumps(...,
+  ensure_ascii=False, sort_keys=True, separators=(",", ":"))`、UTF-8 bytes、SHA-256 lowercase hexの
+  順序で得る。`model_call_id`、`turn_id`、`roles`、`publication_visibility`の変更はdigestを変えず、
+  production helperから期待値を生成しない。
+- [ ] ModelErrorStep、TimeoutStep、InvalidJsonStep、script exhaustionのexception messageをそれぞれ
+  `model invocation failed`、`model invocation timed out`、`model response JSON is invalid`、
+  `script exhausted`へ完全一致させる。`code`、`body`、`message`、raw errorをmessage / call logへ入れず、
+  driverがsanitized `error_code` / `status`へ写像し、`ModelResponse` / Eventを作らないことを検証する。
 - [ ] TOP_SECRET_SENTINELはtest memory上だけに注入し、output、captured log、Fixture、
   tests/fixturesへ現れないことを検証する。
 - [ ] call count / order、同一Fixtureから同一`AcceptedSemanticResult`と、P0-04 materializerで
   同一validated proposed Event Sequenceになることをtestする。
-- [ ] `tests/conftest.py`から全pytest sessionへautouseで
-  `tests/support/no_external_network.py`を適用する。socket.socket、socket.create_connection、
-  socket.getaddrinfo、http.client、urllib、外部HTTP clientをfail-fastへpatchし、srcの外部
-  socket / API使用はpytest全体でFAILにする。P0-07専用testだけの境界にしない。
+- [ ] `tests/conftest.py`は編集せず、既存のautouse接続から全pytest sessionへ
+  `tests/support/no_external_network.py`を適用し、`tests/test_no_external_network.py`で検証する。
+  `socket.socket`、`connect`、`connect_ex`、`send`、`sendall`、`sendto`、`socketpair`、
+  `create_connection`、`getaddrinfo`、`http.client`、`urllib`、`httpx`のguardをfail-fastへpatchし、
+  DNS解決も素通りさせない。srcの外部socket / API使用はpytest全体でFAILにする。P0-07専用testだけの
+  境界にしない。
 - [ ] `python -m pytest tests/model -q`のREDは上記の別シェルで、3 factory実装後のGreenは別シェルで
   記録する。
 - [ ] Narrativeだけを変えてもP0-04 materializerのEvent Sequenceは不変、proposed_events変更で
@@ -3380,6 +3474,21 @@ $pythonExe = Join-Path $repoRoot ".venv/Scripts/python.exe"
 if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "missing .venv/Scripts/python.exe." }
 $env:PYTHONPATH = Join-Path $repoRoot "src"
 
+# P0-07 test support scope: existing tests/support/no_external_network.py and
+# tests/test_no_external_network.py。tests/conftest.pyは編集しない。
+$networkOutput = & $pythonExe -m pytest tests/test_no_external_network.py -q 2>&1
+$networkExit = $LASTEXITCODE
+$networkOutput
+if ($networkExit -ne 0) { throw "network guard test failed with exit $networkExit." }
+$networkSetupOutput = & $pythonExe -m pytest tests/test_no_external_network.py --setup-plan -q 2>&1
+$networkSetupExit = $LASTEXITCODE
+$networkSetupOutput
+$networkSetupText = [string]::Join([Environment]::NewLine, [string[]]$networkSetupOutput)
+if ($networkSetupExit -ne 0) { throw "network guard setup-plan failed with exit $networkSetupExit." }
+if ($networkSetupText -notmatch '_block_external_network') {
+    throw 'network guard setup-plan did not show the session autouse guard.'
+}
+
 $fixtureOutput = & $pythonExe -m pytest tests/contracts/test_semantic_result.py tests/model/test_recorded_fixture.py -q 2>&1
 $fixtureExit = $LASTEXITCODE
 $fixtureOutput
@@ -3395,7 +3504,8 @@ if ($mypyExit -ne 0) { throw "mypy failed with exit $mypyExit." }
 
 $requiredRgTerms = @(
     "ModelResponse", "payload: SemanticResultV1", "SEMANTIC_RESULT_ADAPTER.validate_json",
-    "InvalidJsonStep", "NonNegativeStrictInt", "PositiveStrictInt", "LowercaseSha256",
+    "InvalidJsonStep", "NonNegativeStrictInt", "PositiveStrictInt", "LowercaseSha256", "getaddrinfo",
+    "model invocation failed", "model invocation timed out", "model response JSON is invalid", "script exhausted",
     "filter_context_by_visibility.py", "model/__init__.py", "model_invoker.py", "fake_provider.py",
     "scripted_provider.py", "recorded_fixture.py", "materialize_semantic_result_for_test"
 )
@@ -3426,11 +3536,19 @@ if ($networkExit -eq 0) { $networkHits; throw "network source pattern hit." }
 if ($networkExit -ne 1) { throw "network source scan failed with exit $networkExit." }
 ~~~
 
+Greenのdigest evidenceは、`request.context`の`tuple[FactRecord, ...]`を
+`[fact.model_dump(mode="json") for fact in request.context]`のJSON arrayへ変換し、
+`json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",", ":"))`、UTF-8 bytes、SHA-256
+lowercase hexの順で得た`context_digest`と、test側にliteralで置いた期待vectorの一致で固定する。
+`model_call_id`、`turn_id`、`roles`、`publication_visibility`はdigestへ含めず、production helperから
+期待値を生成しない。
+
 PASSはprovider test全成功、retry call count一致、P0-04 Accepted outcomeとmaterializerを通した
 Event Sequence deep equal、sanitized logに
 raw request / contextなし、filter正常、src/neontofとtests/fixturesにsecret・sentinelなし、
 openai・registry等なし、source network pattern 0件、全pytest sessionのautouse network禁止PASS、
-API keyなし、network call 0である。Provider testはFake / Scripted / Recorded Fixtureだけで、
+`tests/test_no_external_network.py`のfocused test / setup-planがexit 0、DNSの`getaddrinfo`を含む
+socket / HTTP guardが全sessionで有効、API keyなし、network call 0である。Provider testはFake / Scripted / Recorded Fixtureだけで、
 OpenAI SDKはPhase 1候補のADR記録だけにする。
 このP0-07のproduction-only forbidden scanでもtestsのreject case語を許し、forbidden source patternの
 `rg`はexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとする。
@@ -3444,15 +3562,46 @@ OpenAI SDKはPhase 1候補のADR記録だけにする。
 
 P0-07はP0-04のAcceptedSemanticResultとtest-only `materialize_semantic_result_for_test`の
 commit後に着手し、`tests/model/support/materialize_proposed_events.py`は作らない。上のtest
-commitは`tests/model/**`と`tests/fixtures/providers/**`だけを対象にし、P0-04のcontract support
-pathと`tests/test_repository_contracts.py`を変更しない。source commitはP0-07の5 production
-sourceだけを対象にし、manifest hunkを含めない。全production source着地後の唯一のmanifest
-integration commitで`tests/test_repository_contracts.py`を更新する。
+commitの明示許可pathは次の16件だけである。
 
-Gate証拠はFixture別test、call count、Accepted outcome、P0-04 materializerによるEvent Sequence、
-JSON bytesから`SEMANTIC_RESULT_ADAPTER.validate_json`を通ったtyped payload、InvalidJsonStepの
-success ModelResponse 0件、NonNegativeStrictInt / PositiveStrictInt / LowercaseSha256、sanitized
-shape、Signature、test-only filter、production publication filter path 0件、socket禁止、sentinel不在、
+~~~text
+tests/model/__init__.py
+tests/model/support/__init__.py
+tests/model/support/filter_context_by_visibility.py
+tests/model/support/run_invocation_scenario.py
+tests/model/test_fake_provider.py
+tests/model/test_scripted_provider.py
+tests/model/test_recorded_fixture.py
+tests/model/test_provider_security.py
+tests/fixtures/providers/normal-turn.v1.json
+tests/fixtures/providers/model-error.v1.json
+tests/fixtures/providers/timeout.v1.json
+tests/fixtures/providers/invalid-json.v1.json
+tests/fixtures/providers/retry-then-success.v1.json
+tests/fixtures/providers/sanitized-call-log.v1.json
+tests/support/no_external_network.py
+tests/test_no_external_network.py
+~~~
+
+このtest commitはテスト支援の既存network guard補正を含むが、`tests/conftest.py`、P0-04のcontract
+support path、production source、`docs/status/**`、`tests/test_repository_contracts.py`のmanifest hunkは
+含めない。source commitはP0-07の5 production sourceだけを対象にし、全production source着地後の唯一の
+manifest integration commitで`tests/test_repository_contracts.py`を更新する。
+
+commit boundaryでも、`context_digest`は`request.context`のFactRecord tupleを
+`[fact.model_dump(mode="json") for fact in request.context]`のJSON arrayにし、
+`json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",", ":"))`、UTF-8 bytes、SHA-256
+lowercase hexの順で固定する。`model_call_id`、`turn_id`、`roles`、`publication_visibility`は含めず、
+期待digestはtest側literal vectorだけから検証する。failureは
+`RuntimeError("model invocation failed")`、`TimeoutError("model invocation timed out")`、
+`ValueError("model response JSON is invalid")`、`RuntimeError("script exhausted")`へ写像し、
+raw errorを漏らさず、sanitized `error_code` / `status`だけをcall logへ残し、ModelResponse / Eventを作らない。
+
+Gate証拠は39 tests / 6 fixtures、Fixture別test、call count、Accepted outcome、P0-04 materializerによる
+Event Sequence、固定digest vector、failure exception mapping、JSON bytesから
+`SEMANTIC_RESULT_ADAPTER.validate_json`を通ったtyped payload、InvalidJsonStepのsuccess ModelResponse
+0件、NonNegativeStrictInt / PositiveStrictInt / LowercaseSha256、sanitized shape、Signature、test-only
+filter、全pytest sessionのsocket / HTTP / DNS guard、production publication filter path 0件、sentinel不在、
 実Provider file 0件、openai検索0件とする。匿名化前responseが混入
 した場合はcommitせず停止し、credential rotationの要否を報告する。
 
@@ -3547,8 +3696,8 @@ claude -p "docs/plans/phase-00-foundation.mdと対象diffを突き合わせ、Ev
 | Fake / Fixture | 全pytest session、pytest tests/model | JSON bytes→`SEMANTIC_RESULT_ADAPTER.validate_json`→`SemanticResultV1` payload、InvalidJsonStepで成功ModelResponse 0、success/failure/retry/timeout/invalid JSON、typed counters/digest、sanitized、test-only filter、全session autouse network/socket禁止、source network pattern 0、API key/network call 0、sentinel不在 |
 | OpenAI contamination | requirementsとsource検索 | lock openai不在、import検索expected 0、ADRのPhase 1候補記録だけ |
 | Non-goal absence | Test-Path / Get-ChildItem + final allowed phase path manifest | 禁止file / directoryの存在0件、`src/neontof/model/publication_visibility.py`、production Context Builder / filter、`src/**/openai*.py`、`src/**/provider_registry.py`、`*.sqlite`、`*.db` 0件、manifest外changed path 0件。`docs/status/phase-00-foundation.md`だけは最終status作成時に許可 |
-| CI parity | ci.yml、failure probe、remote run | localと同じPython command、故意exit 1、復元後green。remote未確認はpending |
-| Status | docs/status/phase-00-foundation.md | Gate結果、実出力、Known Issues、Phase 1停止 |
+| CI parity | ci.yml、failure probe、remote run | localと同じPython command、故意exit 1のfailure probeをnon-zeroで検出、workflow復元。push禁止のためremote未確認はpendingとし、remote green / Phase完了を成功扱いしない |
+| Status | docs/status/phase-00-foundation.md | Gate結果、実出力、Known Issues、CI failure-probe実測、remote未確認はpending（remote green / Phase完了を成功扱いしない）、Phase 1停止 |
 | Line ending | git diff --numstat / --ignore-cr-at-eol --numstat | 2つが一致 |
 | Generated output | git status --short --untracked-files=all | venv、cache、DB、secret、client、migrationsをcommitしない |
 
@@ -3606,6 +3755,11 @@ production-only forbidden語は`src/neontof`だけを対象にし、testsのreje
 patternは`openai`、`anthropic`、`sqlite3.connect`、`sqlite3.Connection`、`provider_registry`とし、
 全ての`rg`はexit 1だけをzero-hit成功、exit 0をhitによるFAIL、exit 2以上をtool failureとして扱う。
 
+`*.db` / `*.sqlite`の再帰的な実体検査は、production/tracked scopeの禁止実体だけを数える。
+そのため`.git`、`.mypy_cache`、`.pytest_cache`、`.ruff_cache`、`__pycache__`、`.venv`の各
+ignored/generated directoryを判定対象から明示的に除外し、それ以外のpathにある禁止実体は除外しない。
+除外後の`*.db` / `*.sqlite`実体件数が0であることを要求する。
+
 ~~~powershell
 $repoRoot = (Get-Location).Path
 $forbiddenRootFiles = @(
@@ -3615,8 +3769,17 @@ $forbiddenRootFiles = @(
 foreach ($relative in $forbiddenRootFiles) {
   if (Test-Path -LiteralPath (Join-Path $repoRoot $relative)) { throw "Forbidden path exists: $relative" }
 }
+$excludedGeneratedDirectories = @(
+  ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", "__pycache__", ".venv"
+)
 $allFiles = @(Get-ChildItem -LiteralPath $repoRoot -Recurse -Force -File |
-  Where-Object { $_.FullName -notlike "$repoRoot\.git\*" })
+  Where-Object {
+    $relative = $_.FullName.Substring($repoRoot.Length + 1).Replace("\", "/")
+    $hasExcludedGeneratedDirectory = @(
+      $relative.Split("/") | Where-Object { $_ -in $excludedGeneratedDirectories }
+    ).Count -gt 0
+    $_.FullName -notlike "$repoRoot\.git\*" -and -not $hasExcludedGeneratedDirectory
+  })
 $forbiddenFiles = @($allFiles | Where-Object {
   $relative = $_.FullName.Substring($repoRoot.Length + 1).Replace("\", "/")
   $_.Name -like "tsconfig*.json" -or $_.Name -like "*.ts" -or
@@ -3626,12 +3789,24 @@ $forbiddenFiles = @($allFiles | Where-Object {
     $relative -match "^src/(?:.*/)?provider_registry\.py$" -or
     $_.Name -like "*.sqlite" -or $_.Name -like "*.db"
 })
-$forbiddenDirs = @(Get-ChildItem -LiteralPath $repoRoot -Recurse -Force -Directory |
-  Where-Object { $_.FullName -notlike "$repoRoot\.git\*" -and $_.Name -in @("client", "migrations") })
+$forbiddenDbSqliteFiles = @($allFiles | Where-Object {
+  $_.Name -like "*.sqlite" -or $_.Name -like "*.db"
+})
+$allDirectories = @(Get-ChildItem -LiteralPath $repoRoot -Recurse -Force -Directory |
+  Where-Object {
+    $relative = $_.FullName.Substring($repoRoot.Length + 1).Replace("\", "/")
+    $hasExcludedGeneratedDirectory = @(
+      $relative.Split("/") | Where-Object { $_ -in $excludedGeneratedDirectories }
+    ).Count -gt 0
+    $_.FullName -notlike "$repoRoot\.git\*" -and -not $hasExcludedGeneratedDirectory
+  })
+$forbiddenDirs = @($allDirectories | Where-Object { $_.Name -in @("client", "migrations") })
 if ($forbiddenFiles.Count -gt 0 -or $forbiddenDirs.Count -gt 0) {
   ($forbiddenFiles + $forbiddenDirs).FullName
   throw "Forbidden Phase 0 file or directory exists"
 }
+"excluded_generated_directories=$($excludedGeneratedDirectories -join ',')"
+"forbidden_db_sqlite_files=$($forbiddenDbSqliteFiles.Count)"
 Write-Output "forbidden_paths=0"
 ~~~
 
@@ -3780,7 +3955,8 @@ foreach ($term in $requiredFinalTerms) {
 }
 
 # P0-01bのfresh TEMP/fresh venv、locked install、compileall、ruff、mypy、pytest、network、
-# lifecycle、workers=2、remote CI pendingは、本文で確定した各canonical commandを個別に実行し、
+# lifecycle、workers=2を本文で確定した各canonical commandとして個別に実行する。remote CIはpush禁止のため
+# 未確認ならpendingで止め、local gateやfailure-probeをremote greenの成功扱いへ読み替えない。
 # 各native exitを直後に保存する。P0-03 focused source-scan blockはここでは実行しない。
 ~~~
 
@@ -3791,7 +3967,8 @@ other errors 0、fixture filename / `rebuild_projection` / `TranscriptEntry` / `
 missing / duplicate=0、final allowed phase path manifest外changed path 0件、
 sqlite3 connection source 0件、全pytest sessionのnetwork call 0を同じGate証拠へ記録する。
 Phase完了報告にはentrypointのHTTP status / JSON、shutdown / PID / rebind、stdout / stderr、
-CI failure / green runの実出力を含め、実Providerの一回きりの出力を使わない。
+CI failure-probeの実出力とremote CIの状態を含める。push禁止のためremote未確認はpendingで止め、
+remote greenやPhase完了を成功扱いしない。実Providerの一回きりの出力は使わない。
 
 ---
 
@@ -3857,8 +4034,9 @@ CI failure / green runの実出力を含め、実Providerの一回きりの出�
    着地させ、その後P0-01bへ進む。P0-01bの実測後にMyWorkflow `build-and-verify.md`を
    actual command / expected output / CI parityへ別commitで更新する。ADRにはPyYAML probe
    evidenceとOpenAI Phase 1候補を記録するが、OpenAI SDKはP0へ入れない。
-3. CI反映操作はユーザーが行う。P0-01b commit後にbranchをremoteへ反映し、failure probeと
-   復元後green runのURL/statusを共有する。未確認はpending。
+3. CI反映操作はユーザーが行う。pushなしではremote runを確認できないため、未確認はpendingで止める。
+   ユーザーがbranchをremoteへ反映した場合に限り、failure probeと復元後green runのURL/statusを共有する。
+   local gate / failure-probeをremote greenやPhase完了の成功扱いにしない。
 4. Phase 0 Gate後のPhase 1開始は自動ではなく、ユーザーが判断する。
 5. migrations/0001_initial.sqlとOpenAI Responses API + official Python SDKはPhase 1の別計画・
    別承認で扱い、Phase 0完了を理由に先行作成しない。
