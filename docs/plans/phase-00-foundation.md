@@ -2089,11 +2089,13 @@ class NarrativeBeat(ContractModel):
     text: str
 
 class ProvisionalDetail(ContractModel):
-    id: EntityId
+    id: EntityId | NpcId
     kind: str
     label: str
     scene_id: SceneId | None
     visibility: Visibility
+
+# `kind="npc"`では`id`にNpcId grammarを要求し、`known_npc_ids`へlookupする。
 
 class SuggestedAction(ContractModel):
     label: str
@@ -2164,8 +2166,8 @@ SEMANTIC_RESULT_ADAPTER = TypeAdapter(SemanticResultV1)
 限定し、ModelResponseのpayload型やSemantic Result root型には使わない。補助型全体でraw input、
 raw / 未検証value、secretを保存fieldにせず、Narrative / noteはstateやEventの入力権威にしない。
 
-`_copy_exact_sequence`は`type(value) is list`または`type(value) is tuple`だけを受理して新しいtupleへ
-copyし、それ以外のtuple subclass、generator、set、任意IterableはTypeErrorとしてrejectする。
+`_copy_exact_sequence`は`type(value) is list`または`type(value) is tuple`だけを受理し、builtin tupleも必ず`fresh tuple`へ
+copyする。それ以外のtuple subclass、generator、set、任意Iterableなどの不正型は`TypeError`としてrejectする。
 validator適用後に元のlist / tupleをmutateしても、model / outcomeのtupleへ伝播しない。
 上記Test Firstに列挙した全tuple fieldは、型注釈へこのprivate `BeforeValidator`を適用する。
 
@@ -2309,6 +2311,8 @@ TransportFrame: TypeAlias = Annotated[
     SemanticResultFrame | NarrativeFrame | DoneFrame,
     Field(discriminator="type"),
 ]
+# `TransportFrame` aliasと同じmodule-qualified public contractとして公開する。
+TRANSPORT_FRAME_ADAPTER = TypeAdapter(TransportFrame)
 
 def build_buffered_response(result: AcceptedSemanticResult) -> tuple[TransportFrame, ...]: ...
 def build_sse_frames(result: AcceptedSemanticResult) -> tuple[TransportFrame, ...]: ...
