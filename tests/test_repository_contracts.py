@@ -140,6 +140,7 @@ def test_repository_contracts_fix_production_manifest_and_forbidden_paths() -> N
             "contracts/transport.py",
             "contracts/character_sheet.py",
             "contracts/scenario.py",
+            "event_metadata.py",
             "model/__init__.py",
             "model/model_invoker.py",
             "model/fake_provider.py",
