@@ -175,6 +175,13 @@ remote failureはPhase 1のlocal実装を止める理由にはしないが、Pha
 - Narrative自由文のparseがstate更新に必要になった。
 - Scenarioが未実装機能へ依存した。
 - C-01またはC-02 decision gateの承認なしに該当WPを開始しようとした。
+- P1-00のproduction manifest exact-match、unsequenced DomainEvent envelope、exact payload bytes、またはcoordination metadataの境界が成立しない。
+- P1-00bでexact production manifestをglob/prefixへ緩める、forbidden判定を削る、source scanを迂回する、またはPython gate order/Windows runner assertionを弱める必要が生じた。
+- 各WPがproduction `.py` pathを同じexact manifestへ明示追加せずにGREENまたはcommitしようとした。
+- `tests/test_repository_contracts.py`をModify/stageする二つのWPを同時にactiveにする、または前WPのfocused/full Gate、`git diff --check`、明示commit、clean worktree確認前にmanifest laneの次WPを開始する必要が生じた。
+- P1-01 preflightで既存manifestの形式変更、既存migration/policy/P0 contract file変更、repository test-side scanとguide-side scanのいずれかの更新経路を飛ばす必要が生じた。
+- `sqlite3.connect`または`sqlite3.Connection`が`src/neontof/persistence/**`以外に現れる、alias/import変形でsource scanを逃れる、またはruntime/test DBをrepository treeへ置く必要が生じた。
+- P1-08開始前に、既存`FrozenJsonValue`のcomposite value round-tripではないlossless raw boundaryが承認済みでなく、Phase 0 semantic contractの改訂も済んでいない。
 - 同一手法の失敗が2回続いた。
 - human playtestでScenarioを完走できない。
 - Narrativeの大半を読み飛ばす、入力迷いが頻発する、NPCが待つだけになる。
@@ -208,6 +215,7 @@ P1-03およびP1-08の実装開始前に、次のいずれかをユーザーが�
 
 - `src/neontof/app.py`
 - `src/neontof/config.py`
+- `src/neontof/event_metadata.py`
 - `src/neontof/main.py`
 - `src/neontof/application/**`
 - `src/neontof/authoring/**`
@@ -224,16 +232,21 @@ P1-03およびP1-08の実装開始前に、次のいずれかをユーザーが�
 - `tests/observability/**`
 - `tests/model_gateway/**`
 - `tests/persistence/**`
+- `tests/test_repository_contracts.py`
 - `tests/rules/**`
 - `tests/web/**`
 - `tests/test_app.py`
 - `tests/test_main.py`
+- `tests/test_repository_contracts.py`
+
+P1-11の新規production manifest追加はCreateに列挙した`src/neontof/web/__init__.py`、`src/neontof/web/contracts.py`、`src/neontof/web/routes.py`、`src/neontof/web/streaming.py`、`src/neontof/application/runtime.py`、`src/neontof/application/public_view.py`、`src/neontof/application/narrative_audit.py`の7つだけである。Modifyの`src/neontof/app.py`、`src/neontof/config.py`、`src/neontof/main.py`は既存manifest entryであり、production pathの追加数へ重複計上しない。
+- `tests/test_event_metadata.py`
 - `tests/acceptance/phase_01_gate.py`
 - `tests/acceptance/phase_01_fake_complete_run.py`
 - `tests/fixtures/phase_01/**`
 - `content/characters/phase-01-investigator.v1.yaml`
 - `content/scenarios/phase-01-clocktower.v1.yaml`
-- `client/**`
+- `client/**`（ただし`client/node_modules`と`client/dist`は生成物としてGitへ追加しない）
 - `.node-version`
 - `.gitignore`
 - `.github/workflows/ci.yml`
@@ -265,6 +278,7 @@ P1-03およびP1-08の実装開始前に、次のいずれかをユーザーが�
 - `tests/contracts/**`
 - 既存の`tests/model/**`
 - `.env`
+- `Dockerfile`
 - `*.sqlite`
 - `*.db`
 - `client/node_modules/**`
@@ -304,19 +318,32 @@ P1-03およびP1-08の実装開始前に、次のいずれかをユーザーが�
 client
   → HTTP/SSE contracts
 
-src/neontof/web
-  → src/neontof/application
+src/neontof/event_metadata
   → existing src/neontof/contracts
 
-src/neontof/application
-  → persistence
-  → rules
-  → authoring
-  → model/gateway
-  → existing contracts/model contracts
+src/neontof/authoring/bootstrap.py
+  → src/neontof/event_metadata
+  → existing src/neontof/contracts
 
-persistence / rules / authoring / gateway
-  → existing contracts
+persistence
+  → src/neontof/event_metadata
+  → existing src/neontof/contracts
+
+src/neontof/application / src/neontof/scenario_runtime
+  → src/neontof/event_metadata
+  → persistence / rules / authoring / model/gateway as needed
+  → existing src/neontof/contracts
+
+src/neontof/web
+  → src/neontof/application
+  → src/neontof/event_metadata
+  → existing src/neontof/contracts
+
+rules / gateway
+  → existing src/neontof/contracts
+
+authoring
+  → existing src/neontof/contracts
 
 existing contracts
   → no Phase 1 modules
@@ -324,6 +351,8 @@ existing contracts
 production code
   → never imports tests
 ```
+
+`src/neontof/event_metadata.py`はpersistence所有ではないneutral top-level moduleで、既存`src/neontof/contracts`にだけ依存する。`persistence`、`rules`、`authoring`、`application`、`model`、`web`をimportしない。
 
 `ProjectionStore`から`EventStore.append()`を呼ばない。`ModelGateway`から`EventStore`を呼ばない。`ScenarioRuntime`は未採番`EventDraft`または`EventBatch`を返し、Stateを直接更新しない。
 
@@ -333,32 +362,51 @@ production code
 
 ### Batch 0 — neutral Event metadata prerequisite
 
-P1-00を最初に着地させる。これはPhase 1 plan内のneutral contract landing unitであり、Roadmapの新しい成果物や上位文書の変更ではない。Event draft、batch metadata、Turn lifecycle metadataの型を`src/neontof/persistence/event_metadata.py`に置き、P1-03/P1-04/P1-08がApplication固有の未定義型へ依存しないようにする。
+P1-00を最初に着地させる。これはPhase 1 plan内のneutral contract landing unitであり、Roadmapの新しい成果物や上位文書の変更ではない。Event draft、batch metadata、Turn lifecycle metadataの型を`src/neontof/event_metadata.py`に置き、production manifestへそのpathを追加し、P1-03/P1-05/P1-08がApplication固有の未定義型へ依存しないようにする。P1-04はrulesとdeterminismだけを担当し、`event_metadata`をimportしない。
 
-### Batch A — Batch 0後に互いに独立
+### Batch 0b — Phase 1 Repository Guard Transition
 
-次はwrite pathが互いに素で、結果依存がないため1バッチで並列実行できる。
+P1-00のcommit後、P1-01 preflightとBatch Aの開始前にP1-00bを独立commitとして着地させる。Phase 0のexact production manifest、forbidden判定、repository test-side source scan、Python gate order、Windows runner assertionを維持したまま、Phase 1で実際に作るclient/migrations pathとpersistence限定のSQLite usageを検証可能なguardへ遷移する。
 
-- P1-01a: SQLite owner、migration、Event Store
-- P1-04a: deterministic 2d6 rules（P1-00のneutral metadataだけを参照し、Application metadataには依存しない）
-- P1-05a: Character / Scenario YAML loader
-- P1-10a: Vite client scaffold
-- P1-12a: First Scenario / Character content
+### Manifest serialization lane — Batch 0b後
 
-### Batch B — Batch A後、互いに独立
+P1-01 preflightがP1-00bの後に完了したら、`tests/test_repository_contracts.py`をModify/stageするproduction WPは一つのmanifest serialization laneへ入れる。exact production manifestを共有するため、同一時刻にactiveにできるlane内WPは一つだけである。次のWPは、前WPのfocused test、full quality Gate、`git diff --check`、明示commit、clean worktreeを確認してから開始する。
 
-- P1-01b: Projection Store
-- P1-02: Transcript / Telemetry Store
-- P1-04b: HP / Resource / Clock rule validation
-- P1-05b: bootstrap Event normalization
+laneの実行順は、技術的依存を満たす範囲で次のとおり固定する。
+
+```text
+P1-01a → P1-01b → P1-02 → P1-03 → P1-04 → P1-05
+  → P1-06 → P1-07 → P1-08 → P1-09 → P1-12 → P1-11
+```
+
+上記の各WPは自分のproduction `.py` pathをexact manifestへ追加し、同じpathをModify、staging、commitへ含める。C-01、C-02、C-03、provider approval、payload boundaryなどのStop Conditionでlane内のWPが停止した場合、後続lane WPを開始しない。lane順は共有manifestの競合を解消するための直列化であり、各WPの技術的な入口条件も別途満たす。
+P1-06のC-03 amendmentでconcrete real Provider adapterのproduction pathが追加される場合も、P1-06 lane slotの中でexact manifest、Modify、staging、commitへ同時に反映し、clean worktreeを確認してから次のP1-07へ進む。
+
+### Batch A — Batch 0b後に開始可能なlane外作業
+
+一般則として、write pathが互いに素で結果依存がないWPは並列実行できる。ただし`tests/test_repository_contracts.py`を共有するproduction WPはこの一般則の例外であり、manifest serialization laneのtokenを同時に二つ取得してはならない。P1-10aはproduction manifestを変更しないclient/test-only WPなので、P1-00bのfocused commandとGateがGREENになった後、lane内のactive WPと並列に開始できる。P1-04a、P1-05a、P1-12aはlane内で順番を待ち、Batch Aの独立並列作業としては扱わない。
+
+- P1-10a: Vite client scaffold（manifest lane外）
+
+### Batch B — 依存成立後のlane外作業
+
+P1-10bとP1-13もproduction manifestを変更しないclient/test-only WPだが、依存関係を越えて並列化しない。P1-10bはP1-10aとP1-11のserver contract後、P1-13はP1-10bとP1-12後に開始する。依存が成立した後に、互いのclient/test pathとDB/temp pathが重ならない別のtest-only作業が存在する場合だけ並列実行できる。
+
 - P1-10b: static UI components
+- P1-13: First Complete Playtest and Phase Gate
 
 ### Sequential integration chain
 
 ```text
-P1-00
-  → P1-01 + P1-04 + P1-05 + P1-10a
-P1-01 + P1-02 + C-01 approval
+P1-00（neutral metadata + production manifest）
+  → P1-00b（Phase 1 Repository Guard Transition）
+P1-00b
+  → P1-01 preflight
+P1-01 preflight
+  → manifest serialization lane（P1-01a → P1-01b → P1-02 → P1-03 → P1-04 → P1-05 → P1-06 → P1-07 → P1-08 → P1-09 → P1-12 → P1-11）
+P1-00b
+  → P1-10a（manifest lane外。P1-00からの技術的依存はない）
+P1-02 + C-01 approval
   → P1-03
 P1-03 + P1-05 + C-03 approval
   → P1-06 Fake/Recorded Gateway（normal invocation 1、zero retry、C-03 contract approved）
@@ -366,7 +414,7 @@ P1-06 Fake/Recorded GREEN + Provider approval + C-03 plan amendment/re-review
   → P1-06 concrete real Provider adapter 1つ
 P1-06 concrete real Provider adapter path確定 + P1-05
   → P1-07
-P1-07 + C-01 approval
+P1-07 + C-01 approval + payload boundary confirmation
   → P1-08
 P1-08 + C-02 approval
   → P1-09
@@ -388,7 +436,7 @@ P1-10aはP1-11のFastAPI、health、readiness、static routeに依存しない�
 
 ### WP landing contract
 
-各WPは、`Test First`のREDを実際に記録し、同じWPの最小実装だけでfocused commandをGREENにし、そのWPに列挙したpathだけを明示的に`git add -- <path...>`して着地させる。依存WPの開始条件は、そのcommitのfocused command、関係するquality gate、`git diff --check`、scope確認が全てGREENであることとする。Batch Aを並列に進める場合も、各workerは自分のWPのpathだけをstageし、他WPのdiffを同じcommitへ混ぜない。
+各WPは、`Test First`のREDを実際に記録し、同じWPの最小実装だけでfocused commandをGREENにし、そのWPに列挙したpathだけを明示的に`git add -- <path...>`して着地させる。依存WPの開始条件は、そのcommitのfocused command、関係するquality gate、`git diff --check`、scope確認が全てGREENであることとする。`tests/test_repository_contracts.py`をModifyするWPでは、このpathを同時に編集・stageできるactive WPを二つ以上にしない。manifest serialization laneでは前WPの明示commitとclean worktreeを確認するまで次WPを開始せず、lane外のclient/test-only WPも依存pathが重なる場合は並列実行しない。
 
 `git add -A`、`git add .`、`git push`は禁止する。各WPの明示的なstaging pathとfocused commandは本計画末尾のCommit Boundary Summaryに固定する。未確認の依存、契約判断、provider選択が見つかったWPはGREENやcommitを偽装せず、該当Stop Conditionで停止する。
 
@@ -400,14 +448,20 @@ P1-10aはP1-11のFastAPI、health、readiness、static routeに依存しない�
 
 **Create**
 
-- `src/neontof/persistence/event_metadata.py`
-- `tests/persistence/test_event_metadata.py`
+- `src/neontof/event_metadata.py`
+- `tests/test_event_metadata.py`
 
-P1-00はP1-01、P1-03、P1-04、P1-08、P1-09、P1-12が共有するneutral locationであり、Application固有のmetadataをEvent StoreやRulesへ逆向きに導入しない。Eventのsequenceはここでも呼び出し側でも割り当てない。`EventDraftBody`は未採番候補のneutral bodyであり、既存parserによるstrictな`DomainEvent`再構築・再検証はEvent Store内だけで行う。`DomainEvent`をproducerの返却型にしない。
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-00はP1-01、P1-03、P1-05、P1-08、P1-09、P1-12が共有するneutral locationであり、Application固有のmetadataをEvent StoreやRulesへ逆向きに導入しない。`tests/test_repository_contracts.py`のproduction manifestへ`src/neontof/event_metadata.py`を明示的に追加する。EventのsequenceはP1-00でも呼び出し側でも割り当てない。`EventDraftBody`は既存`DomainEventBase`と同じ未採番wire envelopeを表し、P1-00はI/O、parser、Event Store、materializationを実装しない。producerの返却型は`EventDraft`または`EventBatch`とし、`DomainEvent`を返却型にしない。`StoredEvent`はEventStoreのappend/read return typeであり、producerの`DomainEvent` return禁止とは別の契約である。P1-04はrulesとdeterminismだけを担当し、`EventMaterializationInput`と`TurnEventMetadata`をimportしない。
 
 **Public types and signatures**
 
 ```python
+RawEventPayloadJson: TypeAlias = StrictBytes
+
 class EventAppendMetadata(ContractModel):
     campaign_id: CampaignId
     session_id: SessionId | None
@@ -417,18 +471,17 @@ class EventAppendMetadata(ContractModel):
     occurred_at: OccurredAt
 
 class EventDraftBody(ContractModel):
+    type: StrictStr
     event_id: EventId
     event_version: Literal[1]
-    type: StrictStr
     campaign_id: CampaignId
     session_id: SessionId | None
     scene_id: SceneId | None
     turn_id: TurnId | None
-    turn_request_id: TurnRequestId | None
     occurred_at: OccurredAt
-    origin: StrictStr
+    origin: Literal["in_world", "table_correction"]
     visibility: Visibility
-    payload: FrozenJsonValue
+    payload_json: RawEventPayloadJson
 
 class EventDraft(ContractModel):
     body: EventDraftBody
@@ -457,60 +510,136 @@ class RevertEventMetadata(EventAppendMetadata):
     turn_request_id: TurnRequestId
     event_ids: tuple[EventId, ...]
 
-class EventMaterializationInput(TurnEventMetadata):
-    pass
+EventMaterializationInput: TypeAlias = TurnEventMetadata
 ```
 
-`EventDraftBody.payload`は既存Event parserが受け付ける未採番候補の`FrozenJsonValue`に限る。producerはpayloadを`DomainEvent`へ先にcast/constructせず、EventStoreがbody全体をstrict再検証してから採番済み`DomainEvent`を生成する。
+`EventDraftBody`には`sequence`もtop-levelの`turn_request_id`も置かない。`turn_request_id`は`EventAppendMetadata`、`TurnEventMetadata`、`RevertEventMetadata`に残すproducer側coordination metadataであり、DomainEvent envelopeのfieldではない。`TurnEventMetadata.turn_request_id`は、同じTurnに属する`PlayerInputAccepted`、`TurnAwaitingPlayer`、`TurnResumed`、`TurnCommitted`、`TurnAborted`の全てへ渡すcanonical request IDである。最初のTurnでは`root_turn_request_id`と`turn_request_id`は同じoriginal request IDを持ち、`TurnAwaitingPlayer`から`TurnResumed`へ進む場合も同じrootと同じcanonical `turn_request_id`を保持する。HTTPの重複排除keyだけを外部coordination recordへ保存する。
 
-`TurnEventMetadata.turn_request_id`は、同じTurnに属する`PlayerInputAccepted`、`TurnAwaitingPlayer`、`TurnResumed`、`TurnCommitted`、`TurnAborted`の全てへ渡すcanonical request IDである。`TurnAwaitingPlayer`から`TurnResumed`へ進む場合も`turn_id`と`turn_request_id`は同じであり、別のTurnや別のlifecycle request IDを作らない。HTTPの重複排除keyは`TurnRequestStore`の外部coordination recordにだけ保存する。
+`RawEventPayloadJson = StrictBytes`はP1-00がexact bytesを保持するだけのwire boundaryである。P1-00ではUTF-8 decode、JSON root、全入力消費、duplicate key、nested object/array shape、envelope assemblyを検証しない。これらのpayload boundary挙動はP1-01のEventStore materializerとそのfocused testsだけが担当する。
 
-`EventStore.append(batch: EventBatch) -> tuple[StoredEvent, ...]`はP1-00で定義した未採番`EventDraft`だけを受け付ける。transaction内で現在の最大sequenceの次から連番を割り当て、各draft bodyを既存のDomainEvent parser/validationへ通して再構築・再検証し、`StoredEvent`（採番済み`DomainEvent`を含む）としてinsertして返す。sequenceの取得・連続性検証・全draftの再検証・insertは同一write transaction内で行い、別のpublic `next_sequence()`を持たない。`SqliteDatabase`はpath、write serialization lock、connection lifecycle、migrationだけを所有し、generic public `write(Callable[[Connection], T])`を公開しない。Observation / Request storeはそれぞれのtableだけを対象に自分のtransactionを持ち、Event Log appendを呼ばない。
+後続P1-01の`EventStore`だけが`_materialize_event_json(*, body: EventDraftBody, sequence: int) -> tuple[bytes, DomainEvent]`を実装する。P1-00は`RawEventPayloadJson`を保持して`EventDraft`または`EventBatch`へ渡すだけであり、このmaterializer、I/O、parser呼出し、Store処理を実装しない。
 
 **Test First**
 
 - `test_event_batch_has_no_caller_assigned_sequence`
-- `test_event_draft_body_has_only_unassigned_domain_event_fields`
+- `test_event_draft_body_matches_unsequenced_domain_event_envelope`
 - `test_event_draft_wraps_neutral_body_without_domain_event`
+- `test_event_payload_json_requires_exact_bytes`
+- `test_neutral_module_does_not_import_application_rules_model_web_or_persistence`
+- `test_turn_request_id_is_coordination_metadata_not_event_envelope_field`
 - `test_turn_event_metadata_is_neutral_and_reusable`
 - `test_revert_event_metadata_is_defined_before_use`
 - `test_event_materialization_input_has_no_application_dependency`
 
+`test_revert_event_metadata_is_defined_before_use`は、`RevertEventMetadata`型を単独でimportでき、`EventAppendMetadata`を継承し、required fieldsを持ち、`root_turn_request_id`を持たないことを検証する。
+
+上記のP1-00各testではproduction importをfunction body内に置き、REDをcollection errorにしない。AST/import testはneutral moduleが`application`、`rules`、`model`、`web`、`persistence`をimportしないことを検査する。focused RED/GREEN commandはP1-00 testとproduction manifestを検査する`tests/test_repository_contracts.py`の両方を明示的に対象にする。P1-00 focused testsでP1-01のpayload parsing、assembly、duplicate key、trailing token、rollback挙動を先取り実装しない。
+
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/persistence/test_event_metadata.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_event_metadata.py tests/test_repository_contracts.py -q
 ```
 
-期待REDはmissing moduleまたは未定義metadata型である。0 testやcollection errorだけをRED証拠にしない。
+REDはfocused commandのexit codeがnon-zeroとなり、missing module/type、契約assertion、またはproduction manifestのexact-match failureのいずれかを失敗理由として確認できる状態とする。collection errorや0 testだけをRED証拠にせず、テスト件数を固定値として扱わない。
 
 **GREEN**
 
-focused commandがexit `0`となり、metadata moduleが`application`、`rules`、`model`、`web`をimportせず、sequenceをcallerから受け取らないことをassertする。
+上記focused commandがexit `0`となり、production manifestが`src/neontof/event_metadata.py`を含むこと、neutral moduleが`application`、`rules`、`model`、`web`、`persistence`をimportしないこと、sequenceをcallerから受け取らないこと、unsequenced envelopeとcoordination metadataの境界、exact bytes typeの契約をassertする。P1-01のpayload parsingやassemblyの結果はこのGateに含めない。
 
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/persistence/event_metadata.py tests/persistence/test_event_metadata.py
+git add -- src/neontof/event_metadata.py tests/test_event_metadata.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめ、`feat: Event draftとmetadataのneutral契約を固定する`として着地させる。
 
-## P1-01: Event Store and Projections
+## P1-00b: Phase 1 Repository Guard Transition
 
-### P1-01 preflight — sqlite source-scan policy stop
+**Modify**
 
-Phase 1のpersistenceは既存のsqlite source scanと衝突する可能性がある。`docs/agent-guide/**`は直接編集禁止であり、scanを通すために現行ガイドへ例外を追記してはならない。
+- `tests/test_repository_contracts.py`
 
-P1-01aの最初のfile edit前に、orchestratorはMyWorkflow正本のallowlist/deploy手順、または現行ガイドが定める許可方式を確認し、sqlite usageをallowlistへ反映する正しい経路と証拠を確定する。この確認ができない、またはガイド直接編集が必要ならP1-01aを停止し、ユーザー判断を求める。remote repairやpushで代替しない。
+P1-00bはP1-00直後、P1-01 preflightとBatch Aの前に着地させる独立したguard transitionである。Phase 0のexact production manifestは完全一致のまま維持し、globやprefixへの変更、forbidden判定の削除、source scanの迂回を行わない。P1-00b自身はproduction manifestへ新しい`.py`を追加せず、以後の各WPが自分のproduction pathを同じmanifestへ明示追加し、同じWPのModify、staging、commitへ含める手順だけを固定する。
 
-policy確認とPhase 1 local scanを混同しない。許可方式が確定した後のlocal scanは、次の対象だけを検査する。
+**Guard contract**
+
+- `GENERATED_DIRECTORY_NAMES`へ`node_modules`を追加する。Phase 1で実際に作る`.node-version`、`client/package.json`、`client/package-lock.json`、`client/tsconfig.json`、`client` directory、`src/neontof/persistence/migrations` directoryは許可する。
+- `Dockerfile`、forbidden SDK/registry、`client/node_modules`、`client/dist`、DB fileは引き続き禁止または生成物扱いとし、manifestのexact-matchやforbidden判定を緩めて許可しない。
+- CIからnode/npmを禁止するassertは撤回する。`node --version`、`npm --version`、`npm ci`、Playwright provisioningはPhase 1のclient Gateで実行可能とする。Python gate orderとWindows runnerのassertは維持する。
+- `sqlite3.connect`と`sqlite3.Connection`は`src/neontof/persistence/**`だけで許可し、その他のproduction moduleでは禁止する。import alias、`from sqlite3 import ...`、別名参照などの変形でrepository source scanを逃れる実装を許可しない。
+- repository test-side source scanはAST/import-awareに実行し、単純な文字列一致だけを回避する別名・import変形を検出する。
+
+**Test First**
+
+- `test_generated_directory_names_include_node_modules`
+- `test_phase_1_client_and_migrations_paths_are_allowed`
+- `test_forbidden_dockerfile_sdk_registry_and_generated_paths_remain_forbidden`
+- `test_exact_production_manifest_requires_explicit_entries`
+- `test_node_and_npm_are_not_rejected_by_ci_guard`
+- `test_python_gate_order_is_preserved`
+- `test_windows_runner_assertion_is_preserved`
+- `test_sqlite_connections_are_allowed_only_in_persistence`
+- `test_sqlite_source_scan_rejects_alias_and_import_variants_outside_persistence`
+- `test_repository_guard_rejects_database_files_in_repository_tree`
+
+上記testは`tests/test_repository_contracts.py`だけに置き、exact production manifestの既存entry、forbidden SDK/registry、Dockerfile、client/node_modules、client/dist、DB file、Python gate order、Windows runner assertionを回帰させない。
+
+**RED**
 
 ```powershell
-rg -n "sqlite3|SqliteDatabase|\.sqlite|\.db" src/neontof/persistence tests/persistence
+.\.venv\Scripts\python.exe -m pytest tests/test_repository_contracts.py -q
 ```
 
-このcommandはPhase 1 persistenceの実使用箇所を表示するlocal evidenceであり、MyWorkflowのallowlist/deploy確認の代替ではない。source scanのpolicy resultが未確認のままP1-01aをGREENにしない。
+REDはfocused commandのexit codeがnon-zeroとなり、guardの許可path、generated directory、node/npm、SQLite scope、alias/import variant、または既存exact manifest/forbidden assertionの失敗理由を確認できる状態とする。collection errorや0 testだけをRED証拠にしない。
+
+**GREEN**
+
+同じcommandがexit `0`となり、production manifestが完全一致のまま明示entryだけを受け付け、forbidden判定を維持し、Phase 1のclient/migrations pathを許可し、node/npmをCIから排除せず、Python gate orderとWindows runner assertionを維持し、`sqlite3.connect`/`sqlite3.Connection`をpersistence配下だけで許可する。alias/import変形によるsource scan bypass、repository tree内のDB file、`client/node_modules`、`client/dist`は検出される。
+
+**Commit boundary**
+
+```powershell
+git add -- tests/test_repository_contracts.py
+```
+
+P1-00bは`tests/test_repository_contracts.py`だけをstageする独立commitとし、次のcommit messageを使う。
+
+```text
+test: Phase 1 repository guard transitionを固定する
+```
+
+## P1-01: Event Store and Projections
+
+### P1-01 preflight — repository guard / manifest / migrations / sqlite source-scan policy stop
+
+P1-00bのfocused commandとGuard GateがGREENであることを、P1-01 preflightの入口条件とする。P1-01 preflight自身では`tests/test_repository_contracts.py`を変更しない。P1-01a着手後は、P1-01aが作るproduction `.py` pathをexact production manifestへ明示追加するため、同ファイルをP1-01aのModify、staging、commitへ含める。
+
+既存production manifestの完全一致、forbidden判定、manifestの形式は変更しない。P1-01aの`migrations/0001_phase_1.sql`と`src/neontof/persistence/migrations` directoryはP1-00bで許可されたpathであり、新規作成してよい。既存のPhase 0 migration、migration policy、contract manifestの形式、P0 contract fileは変更しない。既存entryの削除、glob/prefix化、forbidden SDK/registryの解除、またはP1-00bで明示されたclient/migrations pathとnode/npm usageの範囲を超える変更が必要になった場合は、P1-01aの最初のfile edit前に停止する。
+
+SQLiteの更新経路は二つに分ける。repository test-sideは`tests/test_repository_contracts.py`が所有し、exact manifest、generated path、forbidden path、Python gate order、Windows runner、production sourceのAST/import-aware SQLite scopeを検査する。guide-sideは`docs/agent-guide/build-and-verify.md`が定義するSQLite scanを使い、同文書は直接編集しない。
+
+repository test-sideのfocused evidenceは次で取得する。
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_repository_contracts.py -q
+```
+
+このtest-side scanは`sqlite3.connect`、`sqlite3.Connection`、`import sqlite3 as ...`、`from sqlite3 import ...`などのalias/import変形をAST/import-awareに検出し、単純な文字列一致だけを通す回避を許さない。許可範囲は`src/neontof/persistence/**`だけである。
+
+guide-sideのSQLite scanは`docs/agent-guide/build-and-verify.md`の`production forbidden source scan`全体をそのまま実行する。SQLite判定部は同文書の`Get-RgHitCount`経由の次のpatternと`sqlite_connection_hits`出力を含む。
+
+```powershell
+$sqliteConnectionHits = Get-RgHitCount -Pattern '(?i)(?:sqlite3\.connect|sqlite(?:\+|:))' -Path @('src')
+"sqlite_connection_hits=$sqliteConnectionHits"
+```
+
+P1-00b後のguide-side policyは`src/neontof/persistence/**`だけをSQLite ownerとして扱い、それ以外のproduction sourceをhitとする。`sqlite3.Connection`のimport aliasを含むscope判定はrepository test-sideのAST/import-aware scanが担当し、guide-sideの単純な文字列scanだけで完了扱いにしない。
+
+P1-01aでpersistenceのSQLite usageを導入する前に、guide-side scan policyを`src/neontof/persistence/**`だけをownerとして扱う内容へMyWorkflow正本で更新し、deployしてから、展開後に同じscanを再検証する。`docs/agent-guide/**`は直接編集しない。repository test-sideのguard変更とguide-sideの更新経路を混同せず、両方のevidenceが確認されるまでP1-01aをGREENにしない。文字列一致だけでalias/import変形を見逃す実装や、remote repair/pushによる迂回は認めない。
+
+P1-01、P1-11、P1-13のruntime/test DBはrepository tree外のtemporary pathまたはpytest `tmp_path`だけに置き、repository内の`*.sqlite`、`*.db`、raw DB backupを生成しない。P1-01aのmigration/atomicity、P1-11のserver start/readiness/rollback、P1-13のcomplete run/playtest/rollbackは、このDB locationとguard statusを同時に検証する。
 
 ### P1-01a — SQLite schema and atomic Event Store
 
@@ -523,6 +652,12 @@ rg -n "sqlite3|SqliteDatabase|\.sqlite|\.db" src/neontof/persistence tests/persi
 - `src/neontof/persistence/event_store.py`
 - `tests/persistence/test_migrations.py`
 - `tests/persistence/test_event_store.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-01aのproduction manifest追加は`src/neontof/persistence/__init__.py`、`src/neontof/persistence/sqlite_database.py`、`src/neontof/persistence/migrations.py`、`src/neontof/persistence/event_store.py`の4つだけを明示する。`migrations/0001_phase_1.sql`はmanifestの`.py` entryではなく、P1-00bで許可されたmigration pathとして扱う。
 
 **Public types and signatures**
 
@@ -554,10 +689,23 @@ class EventStore:
         campaign_id: CampaignId,
         turn_request_id: TurnRequestId,
     ) -> tuple[DomainEvent, ...]: ...
+
+def _materialize_event_json(
+    *,
+    body: EventDraftBody,
+    sequence: int,
+) -> tuple[bytes, DomainEvent]: ...
 ```
 
-`EventStore`だけが`DomainEvent`をEvent Logへappendする。`append(batch)`は未採番`EventDraftBody`を全draftについて既存parser/`revalidate_domain_event()`へ通してstrictに再構築・再検証し、同一Campaign、context整合性、unique Event IDを確認する。sequenceは同じ`BEGIN IMMEDIATE` transaction内で次値から連番割当し、採番済み`DomainEvent`を`StoredEvent`へ包んでinsert・返却する。callerへsequence取得APIを公開しない。`SqliteDatabase`のconnection lifecycleを使う各storeは、自分が所有するtableのwrite transactionだけを実行する。
-`read_campaign()`、`read_session()`、`read_turn()`、`find_turn_by_request()`のread-sideは既存どおり`DomainEvent`列を返す。neutral draft化の対象はproducer/append境界だけで、Projection/Event read側の入力契約は変更しない。
+`EventStore`は`from neontof.event_metadata import EventBatch, EventDraftBody, StoredEvent`でneutral typeをimportし、`DomainEvent`をEvent Logへappendする唯一のownerである。`append(batch)`は未採番`EventDraftBody`を受け取り、同じ`BEGIN IMMEDIATE` transaction内でsequenceを割り当て、各draftについて`_materialize_event_json(*, body: EventDraftBody, sequence: int) -> tuple[bytes, DomainEvent]`を呼ぶ。
+
+`_materialize_event_json()`の`body.payload_json`は、UTF-8 strictでdecodeできる単一の完全なJSON objectであり、DomainEventの`payload`全体を表す。materializerはenvelope組み立て前にpayload bytesを全入力消費し、末尾tokenを許さず、全階層のduplicate object keyを拒否し、root object以外を拒否する。duplicate object key拒否は既存`parse_domain_event`の機能ではなくEventStore materializerの先行guardであり、parser受理だけではduplicate key guardの証拠にならない。nested object/arrayのshapeは保持し、元のpayload bytesを再encodeしない。
+
+EventStoreは固定順・compact JSONでenvelopeを構成し、bodyのscalar（`type`、`event_id`、`event_version`、`campaign_id`、`session_id`、`scene_id`、`turn_id`、`occurred_at`、`origin`、`visibility`）とtransactionでassignedした`sequence`をそれぞれ一度だけ出力し、検証済み`payload_json` bytesをouter `payload` valueとして一度だけ挿入する。payload bytesをenvelope fragmentとして連結しない。
+
+完成したassembled bytesを既存`parse_domain_event`へ渡す。照合は二つに分ける。第一に、parsed `DomainEvent`の`type`、`event_id`、`event_version`、`campaign_id`、`session_id`、`scene_id`、`turn_id`、`sequence`（transaction assigned）、`occurred_at`、`origin`、`visibility`というscalar/envelope全fieldがbodyとassigned sequenceにstrict一致することを検証する。第二に、既存parserによるtyped payload validationの成功とは別に、persisted exact assembled `event_json`から特定したouter `payload` valueのbyte spanが検証済み`payload_json`の元bytesと一致すること、nested object/array shapeが保たれていることを検証する。この二つを合わせてenvelope全体の一致とする。既存`FrozenJsonValue`のlossy representationを比較根拠にしない。
+`_materialize_event_json`とenvelope assemblerでは`EventDraftBody.model_dump_json()`、`EventDraftBody.model_dump()`、`DomainEvent.model_dump_json()`、`DomainEvent.model_dump()`、typed modelの汎用再encodeを一切使わない。outer scalarは固定fieldを標準JSON encoderで出し、`payload_json`の元bytesをouter `payload`のnested valueへ一度だけ挿入する。永続化対象の`event_json`はparser受理、scalar/envelope全fieldのstrict一致、typed payload validation、payload byte span一致を通過したexact assembled bytesだけとし、payload boundary failureを含むbatchは同一transaction全体をrollbackする。callerへsequence取得APIを公開しない。`SqliteDatabase`のconnection lifecycleを使う各storeは、自分が所有するtableのwrite transactionだけを実行する。
+`read_campaign()`、`read_session()`、`read_turn()`のread-sideは既存どおり`DomainEvent`列を返す。`find_turn_by_request()`はtop-level envelope fieldやcoordination recordではなく、parserで検証済みのlifecycle Event payloadに含まれるrequest IDを検索する。検索を支えるpartial unique indexまたはderived index dataも同じtransaction内でvalidated payloadから導出し、Event Log authorityをcoordination recordへ移さない。neutral draft化とunsequenced envelopeのmaterializationはproducer/append境界だけで行い、Projection/Event read側の入力契約は変更しない。
 
 `0001_phase_1.sql`は次のtableを作る。
 
@@ -568,7 +716,7 @@ class EventStore:
 - `transcript_entries`
 - `telemetry_entries`
 
-`events`のprimary keyは`(campaign_id, sequence)`、`event_id`はunique、`event_json`はcanonical JSONとする。`PlayerInputAccepted`行の`turn_request_id`へpartial unique indexを付ける。
+`events`のprimary keyは`(campaign_id, sequence)`、`event_id`はunique、`event_json`はparser受理とenvelope一致確認を通過したexact assembled JSON bytesとする。`PlayerInputAccepted`のvalidated lifecycle payloadに対応する`turn_request_id`のpartial unique indexは、同じtransaction内で`event_json`のvalidated lifecycle payloadから導出するSQLite JSON expression index、または非authorityのderived index dataとして扱う。index dataや`TurnRequestStore`のcoordination recordをEvent Log authorityにしない。
 
 **Test First**
 
@@ -584,29 +732,42 @@ class EventStore:
 - `test_sqlite_database_has_no_generic_public_write`
 - `test_migration_is_idempotent`
 - `test_schema_version_is_one`
+- `test_event_json_persists_exact_assembled_bytes`
+- `test_materialized_domain_event_matches_body_and_assigned_sequence`
+- `test_payload_json_requires_single_root_object`
+- `test_payload_json_rejects_invalid_utf8`
+- `test_payload_fragment_cannot_override_sequence_event_id_or_context`
+- `test_payload_json_rejects_trailing_tokens`
+- `test_payload_json_rejects_duplicate_object_keys_at_any_depth`
+- `test_nested_payload_object_and_array_shapes_remain_distinct`
+- `test_payload_boundary_failure_rolls_back_entire_batch`
+- `test_find_turn_by_request_uses_validated_lifecycle_payload`
+- `test_unsequenced_envelope_materialization_stays_inside_event_store`
+- `test_runtime_and_test_databases_stay_outside_repository_tree`
+
+`test_materialized_domain_event_matches_body_and_assigned_sequence`はscalar/envelopeの`type`、`event_id`、`event_version`、`campaign_id`、`session_id`、`scene_id`、`turn_id`、transaction assigned `sequence`、`occurred_at`、`origin`、`visibility`の全fieldをstrict assertし、typed payload validationの成功と、persisted exact assembled `event_json`内のouter `payload` byte spanが元の`payload_json` bytesと一致することを別々にassertする。`model_dump*`や既存`FrozenJsonValue`のlossy representationを比較根拠にしない。
+`test_payload_json_rejects_duplicate_object_keys_at_any_depth`は既存parserへ渡す前のEventStore materializer guardを対象にし、parser受理だけをduplicate key拒否の証拠にしない。
 
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/persistence/test_migrations.py tests/persistence/test_event_store.py -q
+.\.venv\Scripts\python.exe -m pytest tests/persistence/test_migrations.py tests/persistence/test_event_store.py tests/test_repository_contracts.py -q
 ```
 
-期待RED:
+REDはfocused commandのexit codeがnon-zeroとなり、missing module、migration/schema assertion、atomicity、payload boundary（root object、strict UTF-8、trailing token、全階層duplicate key、fragment override）、batch rollback、unsequenced envelope boundary、production manifestの追記漏れまたは未許可pathの失敗理由を確認できる状態とする。collection errorや0 testだけをRED証拠にしない。
 
 ```text
-ERROR ... ModuleNotFoundError: No module named 'neontof.persistence'
+focused command exit non-zero with a failure reason tied to the missing implementation or one of the listed boundary assertions
 ```
-
-または、module skeleton着地後はatomicity testが`2 != 0`で失敗すること。collection errorや0 testはRED証拠にしない。
 
 **GREEN**
 
-同じcommandがexit `0`となり、全testが`passed`、failure `0`。rollback testのrow countが`0`、成功batchのrow countが期待件数と一致し、caller側にsequence割当やgeneric public writeが存在しないこと。
+同じcommandがexit `0`となり、`tests/test_repository_contracts.py`のmanifest/forbidden guardもpassしたうえで、strict UTF-8、single root object、全入力消費、trailing token拒否、全階層duplicate key拒否、fragment override拒否、nested object/array shape distinction、payload boundary failure時のbatch全体rollbackが成立する。固定順compact envelopeへbody scalarとassigned sequenceを一度ずつ出力し、検証済みpayload bytesをouter `payload` valueへ一度だけ挿入したexact assembled bytesが既存parserに受理され、scalar/envelope全fieldのstrict一致、typed payload validation、persisted `event_json`のpayload byte span一致が別々に成立し、そのexact bytesが保存される。validated lifecycle payloadによるturn request検索とunsequenced envelope materializationの境界も成立し、caller側にsequence割当やgeneric public writeが存在しないこともassertする。runtime/test DBはrepository tree外のtemporary pathまたはpytest `tmp_path`だけに置く。
 
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/persistence/__init__.py src/neontof/persistence/sqlite_database.py src/neontof/persistence/migrations.py src/neontof/persistence/migrations/0001_phase_1.sql src/neontof/persistence/event_store.py tests/persistence/test_migrations.py tests/persistence/test_event_store.py
+git add -- src/neontof/persistence/__init__.py src/neontof/persistence/sqlite_database.py src/neontof/persistence/migrations.py src/neontof/persistence/migrations/0001_phase_1.sql src/neontof/persistence/event_store.py tests/persistence/test_migrations.py tests/persistence/test_event_store.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、focused testとsqlite policy確認がGREENになった後、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめて着地させる。
@@ -627,6 +788,12 @@ Acceptance evidence:
 
 - `src/neontof/persistence/projection_store.py`
 - `tests/persistence/test_projection_store.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-01bのproduction manifest追加は`src/neontof/persistence/projection_store.py`だけである。
 
 **Public types and signatures**
 
@@ -666,19 +833,19 @@ Projection tableはderived cacheであり、`delete()`はEventを削除しない
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/persistence/test_projection_store.py -q
+.\.venv\Scripts\python.exe -m pytest tests/persistence/test_projection_store.py tests/test_repository_contracts.py -q
 ```
 
-期待REDは`ModuleNotFoundError: No module named 'neontof.persistence.projection_store'`。実装途中は`AttributeError`で`rebuild`が無いこと。
+期待REDは`ModuleNotFoundError: No module named 'neontof.persistence.projection_store'`、manifest追記漏れ、または未許可pathのfailure。実装途中は`AttributeError`で`rebuild`が無いこと。
 
 **GREEN**
 
-全testがpassし、delete前後の`projection.model_dump_json()`がbyte-for-byte一致すること。
+全testと`tests/test_repository_contracts.py`がpassし、manifest/forbidden guardもexit `0`となる。delete前後の`projection.model_dump_json()`がbyte-for-byte一致すること。Projection test DBはrepository tree外のtemporary pathまたはpytest `tmp_path`だけに置き、DB fileをmanifestやstatusへ出さない。
 
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/persistence/projection_store.py tests/persistence/test_projection_store.py
+git add -- src/neontof/persistence/projection_store.py tests/persistence/test_projection_store.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、P1-01aのcommitとsqlite policy/local scanがGREENで、delete/rebuild/reverted-turn focused commandがfailure `0`になった後、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめて着地させる。
@@ -700,6 +867,12 @@ feat: Eventから再生成できるProjection Storeを追加する
 - `tests/observability/test_sanitization.py`
 - `tests/persistence/test_observation_store.py`
 - `tests/integration/test_failed_turn_observations.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-02のproduction manifest追加は`src/neontof/observability/__init__.py`、`src/neontof/observability/records.py`、`src/neontof/observability/sanitization.py`、`src/neontof/persistence/observation_store.py`の4つである。
 
 **Public types and signatures**
 
@@ -778,10 +951,10 @@ class ObservationStore:
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/observability tests/persistence/test_observation_store.py tests/integration/test_failed_turn_observations.py -q
+.\.venv\Scripts\python.exe -m pytest tests/observability tests/persistence/test_observation_store.py tests/integration/test_failed_turn_observations.py tests/test_repository_contracts.py -q
 ```
 
-期待REDはmissing moduleまたはtimeout integrationのTranscript件数`0`に対する`1`期待失敗。
+期待REDはmissing module、manifest追記漏れ、未許可path、またはtimeout integrationのTranscript件数`0`に対する`1`期待失敗。
 
 **GREEN**
 
@@ -790,11 +963,12 @@ class ObservationStore:
 - Telemetryに`timed_out`
 - session costはrevert前後で同値
 - secret sentinel hit `0`
+- `tests/test_repository_contracts.py`のexact manifest/forbidden guardがexit `0`
 
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/observability/__init__.py src/neontof/observability/records.py src/neontof/observability/sanitization.py src/neontof/persistence/observation_store.py tests/observability/test_sanitization.py tests/persistence/test_observation_store.py tests/integration/test_failed_turn_observations.py
+git add -- src/neontof/observability/__init__.py src/neontof/observability/records.py src/neontof/observability/sanitization.py src/neontof/persistence/observation_store.py tests/observability/test_sanitization.py tests/persistence/test_observation_store.py tests/integration/test_failed_turn_observations.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、P1-00/P1-01のEvent ownershipと独立したobservation focused commandがfailure `0`になった後、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめて着地させる。
@@ -816,6 +990,12 @@ feat: TranscriptとTelemetryをEvent transaction外へ保存する
 - `tests/application/test_turn_lifecycle.py`
 - `tests/persistence/test_turn_request_store.py`
 - `tests/integration/test_turn_idempotency.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-03のproduction manifest追加は`src/neontof/application/__init__.py`、`src/neontof/application/turn_models.py`、`src/neontof/application/turn_lifecycle.py`、`src/neontof/persistence/turn_request_store.py`の4つである。
 
 **Public types and signatures**
 
@@ -905,7 +1085,7 @@ def build_crash_recovery_batch(
 ) -> EventBatch: ...
 ```
 
-`project_turn_status()`を変更せずreuseする。Event-derived `TurnStatus`がゲーム状態の権威であり、`TurnRequestStore`はHTTPの重複排除、processing claim、cached responseだけを持つ外部coordination recordで、Event Projectionへの入力にしない。
+P1-03のlifecycle builderは`from neontof.event_metadata import EventBatch, RevertEventMetadata, TurnEventMetadata`でneutral metadataを参照する。`project_turn_status()`を変更せずreuseする。Event-derived `TurnStatus`がゲーム状態の権威であり、`TurnRequestStore`はHTTPの重複排除、processing claim、cached responseだけを持つ外部coordination recordで、Event Projectionへの入力にしない。
 
 `PlayerInputAcceptedEvent`、`TurnAwaitingPlayerEvent`、`TurnResumedEvent`、`TurnCommittedEvent`、`TurnAbortedEvent`は、同じTurnなら全て`TurnEventMetadata.turn_request_id`をそのまま使う。`TurnAwaitingPlayer → TurnResumed`は同じ`turn_id`、同じcanonical `turn_request_id`であり、resume HTTPの新しい`request_key`はcoordination recordにだけ保存する。
 
@@ -944,10 +1124,10 @@ def build_crash_recovery_batch(
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/application/test_turn_lifecycle.py tests/persistence/test_turn_request_store.py tests/integration/test_turn_idempotency.py -q
+.\.venv\Scripts\python.exe -m pytest tests/application/test_turn_lifecycle.py tests/persistence/test_turn_request_store.py tests/integration/test_turn_idempotency.py tests/test_repository_contracts.py -q
 ```
 
-期待REDはmissing module、またはduplicate requestでcall count `2`に対し`1`期待の失敗。
+期待REDはmissing module、manifest追記漏れ、未許可path、またはduplicate requestでcall count `2`に対し`1`期待の失敗。
 
 **GREEN**
 
@@ -960,7 +1140,7 @@ player_input_accepted_events=1
 turn_committed_events=1
 ```
 
-recovery testでは、claim-before-first-eventが`PlayerInputAccepted`→`TurnAborted`の2 draftを1 batchでappendし、after-accepted/after-startedは`TurnAborted`だけ、after-`TurnAwaitingPlayer`はawaiting responseのcache、after-terminalはEvent追加なしとなる。各分岐は`TurnRequestStore.status`ではなく既存のEvent-derived status parserの順序とcanonical `turn_request_id`で決める。
+recovery testでは、claim-before-first-eventが`PlayerInputAccepted`→`TurnAborted`の2 draftを1 batchでappendし、after-accepted/after-startedは`TurnAborted`だけ、after-`TurnAwaitingPlayer`はawaiting responseのcache、after-terminalはEvent追加なしとなる。各分岐は`TurnRequestStore.status`ではなく既存のEvent-derived status parserの順序とcanonical `turn_request_id`で決める。`tests/test_repository_contracts.py`のmanifest/forbidden guardも同じcommandでexit `0`となる。
 
 **Contract checkpoint**
 
@@ -969,7 +1149,7 @@ C-01 decision gateがユーザー承認済みでない場合、P1-03の実装を
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/application/__init__.py src/neontof/application/turn_models.py src/neontof/application/turn_lifecycle.py src/neontof/persistence/turn_request_store.py tests/application/test_turn_lifecycle.py tests/persistence/test_turn_request_store.py tests/integration/test_turn_idempotency.py
+git add -- src/neontof/application/__init__.py src/neontof/application/turn_models.py src/neontof/application/turn_lifecycle.py src/neontof/persistence/turn_request_store.py tests/application/test_turn_lifecycle.py tests/persistence/test_turn_request_store.py tests/integration/test_turn_idempotency.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、C-01 decision gate承認後に上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめて着地させる。
@@ -988,6 +1168,12 @@ feat: Request IDで直列化するTurn状態機械を追加する
 - `src/neontof/rules/minimal_2d6.py`
 - `tests/rules/test_minimal_2d6.py`
 - `tests/rules/test_rule_effect_validation.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-04のproduction manifest追加は`src/neontof/rules/__init__.py`と`src/neontof/rules/minimal_2d6.py`だけである。P1-04はrulesとdeterminismだけを担当し、`event_metadata`、`EventMaterializationInput`、`TurnEventMetadata`をimportしない。
 
 **Public types and signatures**
 
@@ -1047,24 +1233,24 @@ HPは`resource:hp`、Character Sheetの1資源はその既存`ResourceId`とし�
 - `test_global_random_state_does_not_affect_result`
 - `test_result_is_between_two_and_twelve`
 - `test_resource_change_cannot_cross_zero_or_maximum`
-- `test_rules_module_does_not_import_application_metadata`
+- `test_rules_module_does_not_import_event_metadata`
 
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/rules -q
+.\.venv\Scripts\python.exe -m pytest tests/rules tests/test_repository_contracts.py -q
 ```
 
 期待REDはmissing module。skeleton後は再現性testで異なるdiceとなる失敗。
 
 **GREEN**
 
-全test pass。固定fixtureを2回実行した`derived_seed`、`formula`、`result`が一致し、resultはEventのauthoritative fieldsだけから再計算可能である。
+全testと`tests/test_repository_contracts.py`がpassする。固定fixtureを2回実行した`derived_seed`、`formula`、`result`が一致し、resultはEventのauthoritative fieldsだけから再計算可能である。manifest/forbidden guardの未登録production pathも検出されない。
 
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/rules/__init__.py src/neontof/rules/minimal_2d6.py tests/rules/test_minimal_2d6.py tests/rules/test_rule_effect_validation.py
+git add -- src/neontof/rules/__init__.py src/neontof/rules/minimal_2d6.py tests/rules/test_minimal_2d6.py tests/rules/test_rule_effect_validation.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、P1-00のneutral metadataを除くApplication依存がないことを確認した後、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめて着地させる。
@@ -1098,6 +1284,9 @@ feat: 再現可能な最小Rulesetと資源境界を実装する
 - `requirements.in`
 - `requirements-dev.in`
 - `requirements.lock.txt`
+- `tests/test_repository_contracts.py`
+
+P1-05のproduction manifest追加は`src/neontof/authoring/__init__.py`、`src/neontof/authoring/yaml_loader.py`、`src/neontof/authoring/character_loader.py`、`src/neontof/authoring/scenario_loader.py`、`src/neontof/authoring/bootstrap.py`の5つである。`src/neontof/authoring/bootstrap.py`は`from neontof.event_metadata import EventBatch`と必要なneutral metadata型をimportする。
 
 **Public types and signatures**
 
@@ -1127,6 +1316,8 @@ def build_bootstrap_events(
     event_ids: Sequence[EventId],
 ) -> EventBatch: ...
 ```
+
+`src/neontof/authoring/bootstrap.py`は`from neontof.event_metadata import EventBatch`と必要なneutral metadata型をimportし、`build_bootstrap_events()`はcaller-assigned sequenceを持たない`EventBatch`を返す。
 
 ### Phase 1 input, ID, Fact, and authority contract
 
@@ -1208,14 +1399,14 @@ Secretは`FactAsserted.visibility="gm_only"`、公開情報は`player_visible`�
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/authoring -q
+.\.venv\Scripts\python.exe -m pytest tests/authoring tests/test_repository_contracts.py -q
 ```
 
 期待REDはmissing module。bootstrap skeleton後はProjectionのHP / location / secret Fact不足でassertion failure。
 
 **GREEN**
 
-全test pass。bootstrap Event列を`rebuild_projection()`へ渡し、Character current HP、Resource、Location、Clock、Scenario ID、Scene ID、Factが期待値と一致する。
+全testと`tests/test_repository_contracts.py`がpassする。bootstrap Event列を`rebuild_projection()`へ渡し、Character current HP、Resource、Location、Clock、Scenario ID、Scene ID、Factが期待値と一致する。manifest追記漏れと未許可pathがないことも同じcommandで確認する。
 
 **Lock command**
 
@@ -1245,7 +1436,7 @@ No broken requirements found.
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/authoring/__init__.py src/neontof/authoring/yaml_loader.py src/neontof/authoring/character_loader.py src/neontof/authoring/scenario_loader.py src/neontof/authoring/bootstrap.py tests/authoring/test_yaml_loader.py tests/authoring/test_character_loader.py tests/authoring/test_scenario_loader.py tests/authoring/test_bootstrap_events.py requirements.in requirements-dev.in requirements.lock.txt
+git add -- src/neontof/authoring/__init__.py src/neontof/authoring/yaml_loader.py src/neontof/authoring/character_loader.py src/neontof/authoring/scenario_loader.py src/neontof/authoring/bootstrap.py tests/authoring/test_yaml_loader.py tests/authoring/test_character_loader.py tests/authoring/test_scenario_loader.py tests/authoring/test_bootstrap_events.py requirements.in requirements-dev.in requirements.lock.txt tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、上記pathのtestsとimplementation、依存更新を1つのlogical GREEN commitへまとめ、ScenarioV1/CharacterSheetV1 input、stable ID、Fact schema、bootstrap clock/authority、fresh lock install、focused authoring commandを確認して着地させる。
@@ -1266,6 +1457,12 @@ feat: CharacterとScenarioをEventへ正規化する
 - `tests/model_gateway/test_gateway_retry.py`
 - `tests/model_gateway/test_gateway_security.py`
 - `tests/model_gateway/test_gateway_fake_provider.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-06のproduction manifest追加は`src/neontof/model/gateway_models.py`と`src/neontof/model/gateway.py`の2つである。
 
 **Public types and signatures**
 
@@ -1342,7 +1539,7 @@ class ModelGateway:
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/model_gateway -q
+.\.venv\Scripts\python.exe -m pytest tests/model_gateway tests/test_repository_contracts.py -q
 ```
 
 期待REDはmissing module。gateway skeleton後はprovider call count `2`に対する`1`期待失敗、またはC-03 conditional provider-boundary assertion未実装の失敗となる。C-03未承認中のconditional test/signatureをGREEN扱いにしない。
@@ -1358,6 +1555,7 @@ secret_hits=0
 ```
 
 に相当するassertionが全てpassし、provider直前の実際のrequestがpublic-onlyで`gm_only`を含まず、callerの`player_input`と`dice_result`が到達する。C-03 contract approval後はFake / Recorded GatewayをGREENまたはcommit扱いにできるが、provider approval、C-03 plan amendment、再レビューが完了するまでconcrete real Provider adapterを実装、GREEN、commit扱いにしない。
+`tests/test_repository_contracts.py`のmanifest/forbidden guardも同じcommandでexit `0`となる。
 
 ### C-03 decision gate — Provider request boundary
 
@@ -1390,7 +1588,7 @@ provider approval前はSDK dependency、key reader、external HTTP call、concre
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/model/gateway_models.py src/neontof/model/gateway.py tests/model_gateway/test_gateway_budget.py tests/model_gateway/test_gateway_retry.py tests/model_gateway/test_gateway_security.py tests/model_gateway/test_gateway_fake_provider.py
+git add -- src/neontof/model/gateway_models.py src/neontof/model/gateway.py tests/model_gateway/test_gateway_budget.py tests/model_gateway/test_gateway_retry.py tests/model_gateway/test_gateway_security.py tests/model_gateway/test_gateway_fake_provider.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残す。C-03承認後、上記pathのFake/Recorded testsとimplementationを1つのlogical GREEN commitへまとめる。Fake/Recorded GREEN、provider approval、C-03 plan amendmentの再レビュー、exact pathの確定後に、amendmentで追加されたreal adapter/test pathを明示して別のlogical GREEN commitへまとめる。未承認中は該当する`git add` pathを確定せず、concrete real Provider adapterのGREEN/commit扱いにしない。
@@ -1410,6 +1608,12 @@ feat: Model Gatewayの予算と安全なProvider境界を実装する
 - `tests/application/test_context_builder.py`
 - `tests/application/test_entity_resolver.py`
 - `tests/integration/test_evidence_validation.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-07のproduction manifest追加は`src/neontof/application/context_builder.py`と`src/neontof/application/entity_resolver.py`の2つである。
 
 **Public types and signatures**
 
@@ -1562,7 +1766,7 @@ Evidenceは既存`validate_semantic_result()`によりfact existence、visibilit
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/application/test_context_builder.py tests/application/test_entity_resolver.py tests/integration/test_evidence_validation.py -q
+.\.venv\Scripts\python.exe -m pytest tests/application/test_context_builder.py tests/application/test_entity_resolver.py tests/integration/test_evidence_validation.py tests/test_repository_contracts.py -q
 ```
 
 期待REDはmissing module。visibility filter skeleton後はsecret sentinelがContextに存在するassertion failure。
@@ -1573,11 +1777,12 @@ Evidenceは既存`validate_semantic_result()`によりfact existence、visibilit
 - unknown history fixtureのNarrativeまたはrejectionが「未決定」
 - invisible Evidence outcomeが`RejectedSemanticResult`
 - Alias resolutionが同じstable ID
+- `tests/test_repository_contracts.py`のmanifest/forbidden guardがexit `0`
 
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/application/context_builder.py src/neontof/application/entity_resolver.py tests/application/test_context_builder.py tests/application/test_entity_resolver.py tests/integration/test_evidence_validation.py
+git add -- src/neontof/application/context_builder.py src/neontof/application/entity_resolver.py tests/application/test_context_builder.py tests/application/test_entity_resolver.py tests/integration/test_evidence_validation.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、`ApplicationRegistry`、known clock ID `0`、PublicContext/PublicProjection、provider spy/sabotage、Evidence validationのfocused commandがfailure `0`になった後、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめて着地させる。
@@ -1599,6 +1804,12 @@ feat: Visibility Filter、PublicProjection、Evidence validation、Alias解決�
 - `tests/application/test_semantic_pipeline.py`
 - `tests/integration/test_complete_fake_turn.py`
 - `tests/integration/test_model_failure_atomicity.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-08のproduction manifest追加は`src/neontof/application/event_materializer.py`、`src/neontof/application/semantic_pipeline.py`、`src/neontof/application/turn_engine.py`の3つである。P1-08のpayload boundary checkpointと既存`FrozenJsonValue`のcomposite value round-trip開始前stopは維持し、P1-00で推測実装しない。
 
 **Public types and signatures**
 
@@ -1676,6 +1887,12 @@ class TurnEngine:
 
 `EventMaterializationInput`はP1-00のneutral typeをimportして使い、P1-08で再定義しない。`materialize_accepted_result()`はcaller-assigned sequenceを持たない`EventBatch`を返し、`materialize_dice_event()`は未採番`EventDraft`を返す。`EventStore.append()`がsequence割当、既存DomainEvent parserによる再構築・再検証、全batch appendを同じtransactionで行う。P1-08のproducerは`DomainEvent`または`tuple[DomainEvent, ...]`を返さない。DiceのmaterializationとEvent replay projectionはP1-08の責務である。`DiceProjection.rolls`と`DiceResult`は`DiceRolledPayload`の`campaign_seed`、`action_id`、`roll_index`、`derived_seed`、`formula`、`result`だけをauthoritative fieldsとして保持する。
 
+`P1-08`は`from neontof.event_metadata import EventBatch, EventDraft, EventMaterializationInput`でneutral typeをimportする。
+
+### Payload boundary checkpoint
+
+既存`FrozenJsonValue`のcomposite value round-tripをP1-00で推測実装しない。P1-08がsemantic resultのpayloadをlosslessにmaterializeするために既存Phase 0 semantic contractでは不足すると判明した場合、P1-08開始前に停止し、Phase 0 semantic contractの改訂または別の承認済みraw boundaryの確定を待つ。この計画からProduct Plan、ROADMAP、ADR、P0契約本文は変更しない。
+
 Pipeline順序を固定する。
 
 1. Player InputをTranscriptへappendする。
@@ -1717,7 +1934,7 @@ Pipeline順序を固定する。
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/application/test_event_materializer.py tests/application/test_semantic_pipeline.py tests/integration/test_complete_fake_turn.py tests/integration/test_model_failure_atomicity.py -q
+.\.venv\Scripts\python.exe -m pytest tests/application/test_event_materializer.py tests/application/test_semantic_pipeline.py tests/integration/test_complete_fake_turn.py tests/integration/test_model_failure_atomicity.py tests/test_repository_contracts.py -q
 ```
 
 期待REDはmissing module。atomicity実装途中では1件以上のeffect Eventが残り、期待`0`とのassertion failureになる。
@@ -1729,6 +1946,7 @@ Pipeline順序を固定する。
 - failure時effect Event count `0`
 - Narrative-only時Resource / Location / Clock / Fact projectionが不変
 - Suggested Actionsが2〜4件
+- `tests/test_repository_contracts.py`のmanifest/forbidden guardがexit `0`
 
 **Contract checkpoint**
 
@@ -1737,7 +1955,7 @@ C-01 decision gateが未承認なら、P1-08の`clarification_request`実装、�
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/application/event_materializer.py src/neontof/application/semantic_pipeline.py src/neontof/application/turn_engine.py tests/application/test_event_materializer.py tests/application/test_semantic_pipeline.py tests/integration/test_complete_fake_turn.py tests/integration/test_model_failure_atomicity.py
+git add -- src/neontof/application/event_materializer.py src/neontof/application/semantic_pipeline.py src/neontof/application/turn_engine.py tests/application/test_event_materializer.py tests/application/test_semantic_pipeline.py tests/integration/test_complete_fake_turn.py tests/integration/test_model_failure_atomicity.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、C-01 decision gateが承認済みで、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめる。focused commandのfailure `0`、Event batch atomicity、dice replay、normal provider invocation count `1`を確認して着地させる。
@@ -1755,6 +1973,14 @@ feat: 検証済みproposalだけをatomic appendするTurn Engineを実装する
 - `src/neontof/application/provisional_details.py`
 - `tests/application/test_provisional_details.py`
 - `tests/integration/test_provisional_detail_lifecycle.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-09のproduction manifest追加は`src/neontof/application/provisional_details.py`だけである。
+
+P1-09は`from neontof.event_metadata import EventBatch, EventMaterializationInput`でneutral typeをimportする。
 
 ### C-02 decision gate — provisional_detail ID and Fact contract
 
@@ -1833,14 +2059,14 @@ def promote_provisional_detail(
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/application/test_provisional_details.py tests/integration/test_provisional_detail_lifecycle.py -q
+.\.venv\Scripts\python.exe -m pytest tests/application/test_provisional_details.py tests/integration/test_provisional_detail_lifecycle.py tests/test_repository_contracts.py -q
 ```
 
-期待REDはmissing module。scene filter未実装時は終了Sceneのdetail件数`1`に対し`0`期待の失敗。
+期待REDはmissing module、manifest追記漏れ、未許可path。scene filter未実装時は終了Sceneのdetail件数`1`に対し`0`期待の失敗。
 
 **GREEN**
 
-本棚fixtureで、次Turnに1件、昇格後canonical 1件、Scene終了後provisional 0件、Transcript narrative 1件が成立する。
+本棚fixtureで、次Turnに1件、昇格後canonical 1件、Scene終了後provisional 0件、Transcript narrative 1件が成立し、`tests/test_repository_contracts.py`のmanifest/forbidden guardもexit `0`となる。
 
 **Contract checkpoint**
 
@@ -1849,7 +2075,7 @@ C-02が未承認なら、P1-09のfocused testをGREENにせず、`ProvisionalDet
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/application/provisional_details.py tests/application/test_provisional_details.py tests/integration/test_provisional_detail_lifecycle.py
+git add -- src/neontof/application/provisional_details.py tests/application/test_provisional_details.py tests/integration/test_provisional_detail_lifecycle.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、C-02 decision gate承認後、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめ、first-mentioned test、Fact schema、scene lifetime、conflict handlingのfocused commandを確認して着地させる。
@@ -2014,6 +2240,7 @@ export async function submitTurn(
 
 - `scaffold.spec.ts`でVite dev/preview serverのroot page、input、submit button、status regionのDOM scaffold存在を先に要求する。FastAPI、`/health`、readiness、static routeはこのWPの入力にしない。
 - TypeScriptでunknown frame typeをexhaustive switchによりcompile errorへする。
+- P1-00bのrepository guardがclient許可path、generated path、DB禁止、Python gate order、Windows runner assertionを検査する。
 
 **RED**
 
@@ -2021,6 +2248,7 @@ export async function submitTurn(
 npm --prefix client ci
 npm --prefix client run typecheck
 npm --prefix client run build
+.\.venv\Scripts\python.exe -m pytest tests/test_repository_contracts.py -q
 npm --prefix client run test -- scaffold.spec.ts
 ```
 
@@ -2043,7 +2271,7 @@ vite ... building for production...
 ✓ built
 ```
 
-exit `0`、`client/dist`は生成されるがcommitしない。
+exit `0`、P1-00bのrepository guard testもexit `0`、`client/dist`と`client/node_modules`は生成物としてstatusへ残さずcommitしない。P1-10aはproduction `.py`を作らず、production manifestを増やさない。DB fileをrepository treeへ作らない。CIでもこのguardをclient quality gateと同じ順序で実行し、node/npmはCIから拒否されず、Python gate orderとWindows runner assertionは維持される。
 
 ### Browser Gate: Vite dev/preview scaffold
 
@@ -2131,6 +2359,14 @@ npm --prefix client run test
 
 全Playwright test pass。serverがreadiness 200になってからtestを開始し、test終了後にserverを停止する。DOM text全体にsecret sentinelが存在しない。
 
+**Repository guard / generated artifact Gate**
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_repository_contracts.py -q
+```
+
+P1-00bのrepository guard testがexit `0`となり、exact production manifest、forbidden path判定、Python gate order、Windows runner assertionが維持される。CIでもこのguardをPlaywright実行前に通す。`client/node_modules`と`client/dist`は生成物としてGitへ追加せず、repository tree内にDB fileを作らない。P1-10bはproduction `.py`を作らず、production manifestを増やさない。P1-11のserver lifecycleとrepository tree外temporary pathまたはpytest `tmp_path`のDB条件を満たす。
+
 **Commit boundary**
 
 ```powershell
@@ -2167,6 +2403,9 @@ feat: Phase 1のplayable session UIとreload復元を実装する
 - `src/neontof/main.py`
 - `tests/test_app.py`
 - `tests/test_main.py`
+- `tests/test_repository_contracts.py`
+
+P1-11の新規production manifest追加はCreateに列挙した7つだけを明示する。Modifyに列挙した`src/neontof/app.py`、`src/neontof/config.py`、`src/neontof/main.py`は既存manifest entryであり、変更対象ではあるが新規pathの追加数へ重複計上しない。
 
 **Public types and signatures**
 
@@ -2403,23 +2642,24 @@ Narrative auditは表示訂正だけを生成し、EventをrollbackまたはStat
 - `test_public_view_builder_accepts_only_typed_public_inputs`
 - `test_reload_rebuilds_identical_dice_and_public_session_view_from_event_log`
 - `test_http_status_and_body_shapes_are_canonical`
+- `test_server_lifecycle_uses_external_temporary_database`
 
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/web tests/application/test_narrative_audit.py tests/test_app.py tests/test_main.py -q
+.\.venv\Scripts\python.exe -m pytest tests/web tests/application/test_narrative_audit.py tests/test_app.py tests/test_main.py tests/test_repository_contracts.py -q
 ```
 
 期待REDは404、missing module、またはNarrative frame indexがSemantic frameより小さいassertion failure。
 
 **GREEN**
 
-全test pass。SSEとbufferedのframeをJSON正規化したtupleが一致する。validation failure responseにNarrative frameが存在しない。
+全test pass。SSEとbufferedのframeをJSON正規化したtupleが一致する。validation failure responseにNarrative frameが存在しない。server start/readiness/rollbackのruntime/test DBはrepository tree外のtemporary pathまたはpytest `tmp_path`だけに置き、`tests/test_repository_contracts.py`のguardがexit `0`で、生成DB、`client/node_modules`、`client/dist`、未manifest production pathをstatusへ残さない。
 
 **Commit boundary**
 
 ```powershell
-git add -- src/neontof/web/__init__.py src/neontof/web/contracts.py src/neontof/web/routes.py src/neontof/web/streaming.py src/neontof/application/runtime.py src/neontof/application/public_view.py src/neontof/application/narrative_audit.py src/neontof/app.py src/neontof/config.py src/neontof/main.py tests/web/test_turn_routes.py tests/web/test_streaming.py tests/application/test_narrative_audit.py tests/test_app.py tests/test_main.py
+git add -- src/neontof/web/__init__.py src/neontof/web/contracts.py src/neontof/web/routes.py src/neontof/web/streaming.py src/neontof/application/runtime.py src/neontof/application/public_view.py src/neontof/application/narrative_audit.py src/neontof/app.py src/neontof/config.py src/neontof/main.py tests/web/test_turn_routes.py tests/web/test_streaming.py tests/application/test_narrative_audit.py tests/test_app.py tests/test_main.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめる。canonical JSON、HTTP status/body、SSE/buffered同値、cached replay、full Projection非公開、health lifecycle、Event-only reloadのfocused commandがGREENであることを確認して着地させる。
@@ -2441,6 +2681,14 @@ feat: 検証後だけNarrativeを公開するHTTP経路と訂正表示を追加�
 - `tests/authoring/test_phase_01_content.py`
 - `src/neontof/scenario_runtime.py`
 - `tests/application/test_scenario_runtime.py`
+
+**Modify**
+
+- `tests/test_repository_contracts.py`
+
+P1-12のproduction manifest追加は`src/neontof/scenario_runtime.py`だけである。
+
+`ScenarioRuntime`は`from neontof.event_metadata import EventBatch, EventMaterializationInput`でneutral typeをimportする。
 
 **Content contract**
 
@@ -2506,19 +2754,19 @@ Director conceptはこのconcrete runtimeが担う。secret-aware判断とplayer
 **RED**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/authoring/test_phase_01_content.py tests/application/test_scenario_runtime.py -q
+.\.venv\Scripts\python.exe -m pytest tests/authoring/test_phase_01_content.py tests/application/test_scenario_runtime.py tests/test_repository_contracts.py -q
 ```
 
-期待REDはmissing content fileまたはcardinality assertion failure。
+期待REDはmissing content file、manifest追記漏れ、未許可path、またはcardinality assertion failure。
 
 **GREEN**
 
-全test pass。complete-run fixtureの最終`SessionEnded.reason`は`completed`で、successまたはfailure Endの公開Factが存在する。
+全testと`tests/test_repository_contracts.py`がpassする。complete-run fixtureの最終`SessionEnded.reason`は`completed`で、successまたはfailure Endの公開Factが存在する。manifest追記漏れと未許可pathがないことも同じcommandで確認する。
 
 **Commit boundary**
 
 ```powershell
-git add -- content/characters/phase-01-investigator.v1.yaml content/scenarios/phase-01-clocktower.v1.yaml tests/fixtures/phase_01/complete-run-requests.v1.json tests/fixtures/phase_01/complete-run-provider.v1.json tests/authoring/test_phase_01_content.py src/neontof/scenario_runtime.py tests/application/test_scenario_runtime.py
+git add -- content/characters/phase-01-investigator.v1.yaml content/scenarios/phase-01-clocktower.v1.yaml tests/fixtures/phase_01/complete-run-requests.v1.json tests/fixtures/phase_01/complete-run-provider.v1.json tests/authoring/test_phase_01_content.py src/neontof/scenario_runtime.py tests/application/test_scenario_runtime.py tests/test_repository_contracts.py
 ```
 
 Test FirstのREDは未コミット証拠として残し、上記pathのtestsとimplementationを1つのlogical GREEN commitへまとめる。ScenarioV1/CharacterSheetV1のcardinality、authoritative clock/end condition、secret visibility、clock-driven NPC、complete-run fixtureのfocused commandがfailure `0`であることを確認して着地させる。
@@ -2540,7 +2788,7 @@ feat: 黄昏時計塔ScenarioとClock Runtimeを追加する
 
 ### Automated complete run
 
-`phase_01_fake_complete_run.py`はtemporary directoryへSQLite DBを作り、production loader、Event Store、Fake / Recorded Fixture Gateway、Turn Engine、Projection、HTTP adapterを通してScenarioを完走する。
+`phase_01_fake_complete_run.py`はrepository tree外のtemporary directoryへSQLite DBを作り、production loader、Event Store、Fake / Recorded Fixture Gateway、Turn Engine、Projection、HTTP adapterを通してScenarioを完走する。pytestで起動する補助DBも`tmp_path`またはrepository tree外のtemporary pathだけを使い、repository内へDB fileやraw DB backupを生成しない。
 
 期待最終出力:
 
@@ -2607,6 +2855,7 @@ browser_state=complete
 - Dice replay
 - idempotency
 - Non-goal source / dependency scan
+- P1-00b repository guard、exact production manifest、generated artifact、external DB location
 - content cardinality
 - playtest report required fields
 
@@ -2617,6 +2866,7 @@ unknown-past testはproviderへ固定の「未決定」文字列だけを返さ�
 ```powershell
 .\.venv\Scripts\python.exe tests/acceptance/phase_01_fake_complete_run.py
 .\.venv\Scripts\python.exe tests/acceptance/phase_01_gate.py
+.\.venv\Scripts\python.exe -m pytest tests/test_repository_contracts.py -q
 npm --prefix client ci
 npx --prefix client playwright install chromium
 ```
@@ -2633,7 +2883,7 @@ npm --prefix client run test
 phase_01_gate=pass
 ```
 
-human playtest reportが存在しない、End未到達、replay desire未記入、unknown-past sabotageがcontext mutationを検出できない場合はexit non-zeroとする。Fake / Recorded Fixtureのcomplete runはAPI keyなしlocal acceptance evidenceであり、P1-06の一つの実Provider adapter成果物を置き換えない。
+human playtest reportが存在しない、End未到達、replay desire未記入、unknown-past sabotageがcontext mutationを検出できない場合はexit non-zeroとする。P1-13はproduction `.py`を作らず、production manifestを増やさない。CIでもphase gateと同じrepository guardを実行する。P1-00bのrepository guard testもexit `0`となり、exact manifestの未登録production `.py`、forbidden/generated path、repository tree内DB、`client/node_modules`、`client/dist`を見逃さないことを確認する。Fake / Recorded Fixtureのcomplete runはAPI keyなしlocal acceptance evidenceであり、P1-06の一つの実Provider adapter成果物を置き換えない。
 
 **Commit boundary**
 
@@ -2776,9 +3026,26 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 - Phase 1 Gateにhuman playtestを含む。
 - C-01のcontract tensionが残っている。
 - C-03のProvider request boundaryとprovider approvalが未確定である。
+- DomainEvent envelopeにtop-levelの`turn_request_id`がなく、producer coordination metadataとwire envelopeを混同できない。
+- payloadはexact raw JSON bytes境界を必要とし、typed modelのserializationや既存`FrozenJsonValue`の推測round-tripを永続化の根拠にできない。
+- production manifestはP1-00b後も完全一致で検査され、各WPが自分のproduction `.py` pathを明示追加する必要がある。P1-10a以降のclient/generated path、forbidden path、CI gate、persistence限定のSQLite scopeを同じguardで扱うため、WPごとの追加漏れと誤った一律禁止がリスクになる。
+- `tests/test_repository_contracts.py`を共有するproduction WPを並列実行すると、exact manifest追記のlost updateまたは別WPの未検証entryをGREENにするリスクがある。manifest serialization laneで一つずつ着地させる。
+
+## Known risks
+
+- P1-00の`EventDraftBody`が既存`DomainEventBase`のunsequenced field集合から外れると、P1-01のparser boundaryで再構築できない。
+- `payload_json`のobject/array shapeまたはexact bytesを失うと、永続`event_json`とEvent replayの意味が変わる。
+- lifecycle payloadのvalidation前にturn request検索を行うと、coordination metadataをDomainEvent envelopeのauthorityとして扱うことになる。
+- P1-08でlosslessなraw boundaryが不足した場合、Phase 0 semantic contractの改訂または別の承認済みboundaryなしに進められない。
+- repository test-sideのAST/import-aware SQLite scanと、`docs/agent-guide/build-and-verify.md`に定義されたguide-side scanの更新経路を混同すると、alias/import変形または許可範囲の不整合を見逃す。
+- runtime/test DBをrepository tree内へ作ると、生成物・秘密・rollback対象の境界が壊れる。P1-01、P1-11、P1-13はrepository tree外temporary pathまたはpytest `tmp_path`に限定する。
 
 ## Risk controls
 
+- P1-00はmetadata contract testとproduction manifest contract testを同じfocused commandで確認する。
+- P1-01はparser受理とenvelope一致確認を通過したexact assembled bytesだけを`event_json`へ保存し、既存manifestの形式、既存migration、P0 contract fileを変更しない。production `.py`を作るWPは自分のpathだけをexact manifestへ明示追加し、Modify、staging、commitへ同じpathを含める。
+- P1-00bでrepository guardのexact-match、forbidden判定、source scan、Python gate order、Windows runner assertionを固定し、P1-01aのSQLite usage導入前にMyWorkflow正本のguide-side scan policyを更新・deployしてから、repository test-side scanとguide-side SQLite scanを別経路で再検証する。
+- `tests/test_repository_contracts.py`をModifyするproduction WPはmanifest serialization laneで一つずつfocused/full Gate、`git diff --check`、明示commit、clean worktreeを確認し、P1-10aなどmanifest lane外のclient/test-only WPだけを非共有pathの範囲で並列実行する。
 - WPごとにfailing testを先に着地させる。
 - Event Store、Projection、Visibility、Dice、Gateway、Turn Engineを別commitにする。
 - dependency commitを通過するまで後続integrationを開始しない。
@@ -2793,40 +3060,44 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 - 未commitの局所変更は対象ファイルだけを修正し、ユーザーの無関係な差分へ触れない。
 - commit済み変更は依存逆順に`git revert`する。
 - `git reset --hard`、`git checkout --`を使わない。
-- P1-01 rollback時はServerを停止し、Phase 1で生成した開発用DBだけを退避または削除する。対象absolute pathを確認せずに削除しない。
+- P1-01 rollback時はServerを停止し、repository tree外temporary pathまたはpytest `tmp_path`に置いたPhase 1のDBだけを対象absolute path確認後に退避または削除する。repository tree内にDB fileが現れた場合はGate failureとして扱い、対象を確認せずに削除しない。
 - Projection不具合はEventを残したままprojection tableだけを削除し、修正版でrebuildする。
 - Gateway不具合はFake ProviderのままP1-06 commitをrevertし、API keyや外部通信へfallbackしない。
 - Client不具合はclient commitだけをrevertし、Server contractを変更して帳尻を合わせない。
 - C-01が未承認またはblockingの場合はP1-03以降を開始せず、P1-01 / P1-02 / P1-04 / P1-05の依存commitを保持してユーザー判断を待つ。
 - C-02が未承認またはblockingの場合はP1-09とその依存integrationを開始せず、provisional detailのschemaを作らない。
 - C-03が未承認またはblockingの場合はP1-06 Fake/Recorded Gatewayとその依存integrationを開始せず、GatewayのGREEN/commitを保留する。provider approvalが未承認またはblockingの場合はP1-06 concrete real Provider adapterとP1-07以降のprovider-dependent integrationを開始せず、real adapterのGREEN/commitを保留する。承認だけで固定responseや曖昧なadapterへfallbackしない。Fake / Recordedのlocal validationはprovider approval前も継続できる。
+- P1-00またはP1-00bのmetadata、exact manifest、repository guard、envelope契約が失敗した場合はP1-01以降を開始せず、P0契約や禁止pathを変更しない。
+- P1-08のpayload boundaryが未承認またはPhase 0 semantic contract改訂待ちの場合は、semantic materializationと依存integrationを開始しない。
 
 ---
 
 # 12. Commit Boundary Summary
 
-各WP sectionの`Commit boundary`が、test-first RED→minimal GREENのfocused command、full-green条件、明示的な`git add -- <path...>`を定義する唯一の着地表である。下記の推奨順はcommit message順の要約であり、Batch Aを並列に実行しても各WP sectionのpath集合を越えてstageしない。P1-00を最初に着地させ、P1-04aはP1-00後に開始する。
+各WP sectionの`Commit boundary`が、test-first RED→minimal GREENのfocused command、full-green条件、明示的な`git add -- <path...>`を定義する唯一の着地表である。下記の推奨順はcommit message順の要約であり、`tests/test_repository_contracts.py`をModifyするWPはmanifest serialization laneの順序を守る。P1-00、P1-00bの順に着地させ、P1-00b後にmanifest laneと並列開始できるのはP1-10aである。P1-10bとP1-13は依存成立後、非共有pathのtest-only作業とのみ並列可能であり、共有manifest pathを同時にstageしない。
+P1-01a、P1-01b、P1-02、P1-03、P1-04、P1-05、P1-06、P1-07、P1-08、P1-09、P1-11、P1-12のRED/GREEN focused commandは、各WPの既存focused testと`tests/test_repository_contracts.py`を同じpytest invocationへ含める。P1-00とP1-00bのfocused commandは既存の両test対象を維持し、P1-10a、P1-10b、P1-13はmanifest lane外のguard Gateとして別commandを使う。
 
 推奨commit順:
 
-0. `feat: Event draftとmetadataのneutral契約を固定する`（P1-00）
-1. `feat: append-onlyなSQLite Event Storeと原子性を実装する`（P1-01a）
-2. `feat: Eventから再生成できるProjection Storeを追加する`（P1-01b）
-3. `feat: TranscriptとTelemetryをEvent transaction外へ保存する`（P1-02）
-4. `feat: Request IDで直列化するTurn状態機械を追加する`（P1-03、C-01承認後）
-5. `feat: 再現可能な最小Rulesetと資源境界を実装する`（P1-04）
-6. `feat: CharacterとScenarioをEventへ正規化する`（P1-05）
-7. `feat: Model Gatewayの予算と安全なProvider境界を実装する`（P1-06、C-03・provider approval・plan amendment後）
-8. `feat: Visibility Filter、PublicProjection、Evidence validation、Alias解決を追加する`（P1-07）
-9. `feat: 検証済みproposalだけをatomic appendするTurn Engineを実装する`（P1-08、C-01承認後）
-10. `feat: Event由来のprovisional detail Projectionを追加する`（P1-09、C-02承認後）
-11. `feat: Viteとvanilla TypeScriptのClient scaffoldを追加する`（P1-10a）
-12. `feat: 検証後だけNarrativeを公開するHTTP経路と訂正表示を追加する`（P1-11）
-13. `feat: Phase 1のplayable session UIとreload復元を実装する`（P1-10b）
-14. `feat: 黄昏時計塔ScenarioとClock Runtimeを追加する`（P1-12）
-15. `test: Phase 1の完全実行Gateと実測記録を追加する`（P1-13）
+0. `feat: Event draftとmetadataのneutral契約を固定する`（P1-00、production manifest更新を含む）
+1. `test: Phase 1 repository guard transitionを固定する`（P1-00b、`tests/test_repository_contracts.py`だけ）
+2. `feat: append-onlyなSQLite Event Storeと原子性を実装する`（P1-01a）
+3. `feat: Eventから再生成できるProjection Storeを追加する`（P1-01b）
+4. `feat: TranscriptとTelemetryをEvent transaction外へ保存する`（P1-02）
+5. `feat: Request IDで直列化するTurn状態機械を追加する`（P1-03、C-01承認後）
+6. `feat: 再現可能な最小Rulesetと資源境界を実装する`（P1-04）
+7. `feat: CharacterとScenarioをEventへ正規化する`（P1-05）
+8. `feat: Model Gatewayの予算と安全なProvider境界を実装する`（P1-06、C-03・provider approval・plan amendment後）
+9. `feat: Visibility Filter、PublicProjection、Evidence validation、Alias解決を追加する`（P1-07）
+10. `feat: 検証済みproposalだけをatomic appendするTurn Engineを実装する`（P1-08、C-01承認後、payload boundary確認後）
+11. `feat: Event由来のprovisional detail Projectionを追加する`（P1-09、C-02承認後）
+12. `feat: Viteとvanilla TypeScriptのClient scaffoldを追加する`（P1-10a、manifest lane外）
+13. `feat: 黄昏時計塔ScenarioとClock Runtimeを追加する`（P1-12、manifest lane）
+14. `feat: 検証後だけNarrativeを公開するHTTP経路と訂正表示を追加する`（P1-11、P1-12後のmanifest lane）
+15. `feat: Phase 1のplayable session UIとreload復元を実装する`（P1-10b、P1-10a/P1-11後）
+16. `test: Phase 1の完全実行Gateと実測記録を追加する`（P1-13）
 
-各commit前にfocused test、関連quality gate、diff scopeを確認する。レビュー済みcommitを着地させる前に依存する次WPを開始しない。commit後も`git push`しない。
+各commit前にfocused test、関連quality gate、diff scopeを確認する。依存する次WPを開始する前に、そのWPのcommitを着地させる。commit後も`git push`しない。
 
 ---
 
@@ -2834,6 +3105,10 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 
 Phase 1をPASSと記録できるのは、次の全条件を満たした場合だけである。
 
+- P1-00のmetadata testと`tests/test_repository_contracts.py`が同じfocused commandでexit `0`となる
+- P1-00bのrepository guard testがexit `0`となり、exact production manifest、forbidden/generated path、Python gate order、Windows runner assertion、persistence限定SQLite scope、repository tree外DB条件が確認される
+- P1-01のpayload shape preservation、invalid payload JSON batch rollback、validated lifecycle payloadのturn request検索、unsequenced envelope materialization boundaryがexit `0`で確認される
+- P1-08開始前にlossless raw boundaryが確認され、未承認のPhase 0 semantic contract改訂や推測した`FrozenJsonValue` round-tripが残っていない
 - Python、TypeScript、Playwright、acceptance commandが全てexit `0`
 - Event / Projection rebuildが一致
 - model failureで部分effect Eventが0
