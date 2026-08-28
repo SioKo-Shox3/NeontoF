@@ -24,10 +24,10 @@
 - Event batchは1回のSQLite transactionでappendし、失敗時に全件rollbackする。
 - P1-01a の migration は `0001_event_store.sql` だけを適用し、`schema_migrations` と `events` だけを作る。P1-01b、P1-02、P1-03がそれぞれ `0002_projection_snapshots.sql`、`0003_observation_stores.sql`、`0004_turn_requests.sql`を追加する。全migrationはadditiveで、down migrationを作らない。
 - migration runnerは各SQLファイルのraw SQL bytesを`sha256`し、適用済み行の`version`、`name`、`checksum`のdrift、gap、duplicate、out-of-order、unknown applied versionをDDL前にfail-closedで検証する。pending migrationの判定もtransaction内で行う。
-- migrationの順序は`BEGIN IMMEDIATE` → `sqlite_master`で`type='table'`の`schema_migrations`存在を確認 → 不存在ならapplied setを空にして同tableをSELECTせず、存在するならtable shapeを検証してからread → validation/pending判定 → 必要時だけrepository tree外のSQLite backup API copy → DDL → `schema_migrations` row insert → `COMMIT`とする。pendingかつ既存schema/dataがある場合だけbackupを作り、新規DBまたはbackup不要時は作らない。backup失敗時はDDLを実行しない。
+- migrationの順序は`SqliteDatabase.migrate()` → process-wide shared `threading.Lock` → fixed migration connection open → filesystem pathとmigration `main.file`のsource open前検証 → migration connectionだけで必要ならtransaction外に`PRAGMA journal_mode=WAL`を一度設定 → `BEGIN IMMEDIATE` → `schema_migrations`の存在・shape・applied rows・migration filesのvalidationとpending判定 → pendingかつ既存schema/dataがある場合だけ専用read backup sourceをopen → 三者`samefile`検証 → sourceから新しいpartial destinationへSQLite backup → copy直後destinationのjournal mode実値readback → destination/source close → partial basenameのmain/`-wal`/`-shm`全exact path確認 → reopen verifierでdeadline付き実schema/data比較 → verifier closeとpath再確認 → clean close後の同一basename artifact set promotionまたは全exact path cleanup → `backup_verified` → DDL → `schema_migrations` row insert → `COMMIT`とする。専用sourceをlock/`BEGIN IMMEDIATE`前に開かず、migration connection自身をbackup sourceにしない。pendingかつ既存schema/dataがない場合、新規DB、またはno-opではbackupを作らず、backup失敗・実data/schema mismatch・verification deadline超過時はDDLを実行しない。
 - migrationでDDLと`schema_migrations` rowを同一transactionに置く。no-op再実行はbackupもschema row writeも行わず、backup file/sidecarをGitへ入れない。このcopyはProduct Plan §20のWeb backup機能ではなく、W-Dで必要な最小copyだけである。
-- `SqliteDatabase`にpublic generic `read`/`write`/retry/worker APIを作らない。public型付きStore readだけを公開し、private `_read`/`_write`を境界にする。
-- SQLiteは初回migrate時に`PRAGMA journal_mode=WAL`をtransaction外で一度だけ設定し、`PRAGMA busy_timeout=5000`、`PRAGMA synchronous=FULL`、`isolation_level=None`、`check_same_thread=True`で固定する。process内shared `threading.Lock`でwriteとmigrateを1つに直列化し、readはlock外の別connectionで行う。以後のno-op再実行ではschema/write/backupを行わない。
+- `SqliteDatabase.migrate()`だけをpublic mutation entryとし、public `run_migrations`、public backup/restore/cleanup/diagnostic API、generic `read`/`write`/retry/worker APIを作らない。migration runnerはprivate `_run_migrations`へ閉じ、public型付きStore readだけを公開する。
+- SQLiteはmigration main connectionの初回だけ`PRAGMA journal_mode=WAL`をtransaction外で一度設定し、dedicated source、copy destination、reopen verifierからjournal mode setterを発行しない。backup側はmigration main/source/copy直後destination/close-reopen後verifierのjournal mode実readback値を一致検証し、`DELETE`へ固定しない。全connectionの`timeout=5.0`、`isolation_level=None`、`check_same_thread=True`、`uri=False`、`PRAGMA busy_timeout=5000`、`PRAGMA synchronous=FULL`を固定し、process内shared `threading.Lock`でwriteとmigrateを直列化し、typed Storeの`_read`はlock外の別connectionで行う。以後のno-op再実行ではschema/write/backupを行わない。
 - `_read`はconnectionごとに`PRAGMA query_only=ON`を設定するが、多層防御でありsecurity boundaryとは過大表現しない。主境界はpublic surfaceとrepository source guardである。
 - 既存`DomainEventValidationError`と`DomainEventValidationIssue`/`IssueCode`は、`src/neontof/contracts/event_parser.py`とcore specの既存契約を変更せず、parser・sequence・projection validationだけに使う。Event StoreのDB constraint violationはP1-01aのローカルな`EventStoreConstraintError`へ分離し、その他の`DatabaseError`は`locked`/`io`/`corrupt`/`other`だけを持つ`SqliteOperationError`へ変換する。元exceptionのmessage/args/cause/context/custom attr/logを残さない。
 - `read_campaign`はcampaign内の全sequence連番を読み、全rowの`event_json`、derived columns、readbackを検証してから返す。`read_session`、`read_turn`、`find_turn_by_request`はその完全列へのinspection-only filterであり、対象外rowの破損でもfail-closedにする。
@@ -68,16 +68,16 @@ Role = Literal["referee", "world_simulator", "npc_actor", "narrator"]
 | 確認項目 | 対応する計画上の契約 |
 |---|---|
 | migrationの分割とschema ownership | P1-01a=`0001_event_store.sql`（`schema_migrations`/`events`のみ）、P1-01b=`0002_projection_snapshots.sql`、P1-02=`0003_observation_stores.sql`、P1-03=`0004_turn_requests.sql`。全てadditive、down migrationなし。 |
-| migration runnerの検証・backup・transaction順序 | raw SQL bytes SHA-256、version/name/checksum drift、gap/duplicate/out-of-order/unknown versionのDDL前検証、必要時だけのrepository tree外SQLite backup API copy、DDLとrow insertの同一transaction。 |
-| SQLiteの公開境界とconcurrency | typed Store readだけをpublicにし、private `_read`/`_write`、固定PRAGMA、shared write lock、別connection read、generic write/retry/workerなし。 |
-| exceptionの安全な境界 | 既存`DomainEventValidationError`はparser・sequence・projection validationへ限定し、Event Storeのconstraint violationは`EventStoreConstraintError`、SQLite operation failureは`SqliteOperationError`、migration failureは`MigrationError`へ分離する。いずれも元exceptionの詳細・chain・logを保持しない。 |
+| migration runnerの検証・backup・transaction順序 | raw SQL bytes SHA-256、version/name/checksum drift、gap/duplicate/out-of-order/unknown versionのDDL前検証、`BEGIN IMMEDIATE`後の専用read source、三者`samefile`、copy→close→reopen verifier→deadline付き実schema/data比較→同一basename artifact set確定、DDLとrow insertの同一transaction。 |
+| SQLiteの公開境界とconcurrency | `SqliteDatabase.migrate()`だけをpublic mutation entryにし、private `_run_migrations`、`_read`/`_write`、固定connection kwargs/PRAGMA、shared write lock、別connection read、generic write/retry/workerなし。typed Storeの`_read`はlock外のままにする。 |
+| exceptionの安全な境界 | 既存`DomainEventValidationError`と既存Domain `IssueCode`は変更せず、Event Storeのconstraint violationは`EventStoreConstraintError`、SQLite operation failureは`SqliteOperationError`、migrationのunsupported/identity/cleanup/backup/DDL failureは`MigrationError`の固定codeへ分離する。いずれも元exceptionの詳細・chain・logを保持しない。 |
 | Event readの完全性 | `read_campaign`が全sequence・全row・derived columns・readbackを検証し、typed filterはその完全列に対するinspection-only処理とする。 |
 | Event authorityの入力経路 | Projection、status、dice、public projection、recoveryはfiltered sliceやsnapshot等を入力にせず、campaign全体のvalidated Event列を使う。 |
 | request dedupeとrecovery | DB-wide opaque `request_key`、campaign-scoped canonical `TurnRequestId`、全identity照合、transaction内resume context validation、processing/response型不変条件、campaign全体recovery。 |
 | Observationの非transaction境界 | `tool_call`、purpose-specific allowlist、raw provider情報非保存、Event append外の別`_write`、failed TurnのEvent 0件保持、table-local sequence。 |
 | Projection snapshotのmonotonicity | P1-01bでEvent read→pure rebuild→monotonic upsertを同じwrite lock critical sectionに置き、stale candidateを拒否する。 |
 | Test Firstと着地 | REDで失敗理由を確認し、testsとimplementation（該当SQLを含む）を一つのlogical GREEN commitへまとめ、explicit `git add -- <path...>`で着地する。 |
-| repository guardと証拠 | production manifestの4つのP1-01a `.py` entryを維持し、SQLはmanifest entry外、`tests/test_repository_contracts.py`をModify/stage/commitへ含め、WAL sidecarと`.db` variantsを拒否する。 |
+| repository guardと証拠 | production manifestの4つのP1-01a `.py` entryを維持し、SQLはmanifest entry外、`tests/test_repository_contracts.py`をModify/stage/commitへ含め、DB本体・WAL sidecar・`.db` variants・partial/verified migration artifact・backup rootをrepository tree外へ限定する。 |
 | Phase 1の境界 | `event_metadata.py`、contracts、上位文書、後続WPの実装をP1-01aで変更せず、C-01/C-02/C-03/provider approvalのstop gateを維持する。 |
 
 一般見出しは日本語で記述し、各migrationのschema-set evidence、RED/GREEN、commit boundaryは各WPの契約として定義する。Product Plan、Roadmap、ADR、specの改訂と、二つ目の具体実装がない抽象化はPhase 1の対象外とする。
@@ -205,7 +205,11 @@ Remote未確認はlocal baselineの判定を変更せず、Phase 0のremote Gate
 - P1-01 preflightで既存manifestの形式変更、既存migration/policy/P0 contract file変更、repository test-side scanとguide-side scanのいずれかの更新経路を飛ばす必要が生じた。
 - `sqlite3.connect`または`sqlite3.Connection`が`src/neontof/persistence/**`以外に現れる、alias/import変形でsource scanを逃れる、またはruntime/test DBをrepository treeへ置く必要が生じた。
 - migrationのapplied `version`、`name`、raw SQL bytes SHA-256 checksumにdriftがある、gap、duplicate、out-of-order、unknown applied versionをDDL前に検出できない、またはpending判定をtransaction外へ移す必要が生じた。
-- pending migrationで既存schema/dataがあるのにrepository tree外のSQLite backup API copyを作れない、backupが失敗したのにDDLを続行する、または新規DB/no-op再実行で不要なbackupやschema row writeを行う必要が生じた。
+- pending migrationで既存schema/dataがあるのに`BEGIN IMMEDIATE`後の専用read backup source、三者`samefile`、repository tree外のpartial destination、copy直後destination journal mode readback、close/reopen verifier、実schema/data比較、同一basename artifact setのpromotionまたは全exact path cleanupを完了できない、backupが失敗したのにDDLを続行する、または新規DB/no-op再実行で不要なbackupやschema row writeを行う必要が生じた。
+- Phase 1 DBをfilesystem-backed regular fileに限定できない、URI/in-memory、directory、special fileをsource openまたはDDL前に拒否できない、canonical path・migration `main.file`・source `main.file`の三者`samefile`を検証できない、relative pathまたはhard-link aliasを誤拒否する、または別fileを受理する必要が生じた。
+- migration main/source/copy直後destination/close-reopen後reopen verifierのjournal mode実readback値を一致検証できない、backup側がjournal mode setterを発行する、`SQLITE_OK`継続を含む10秒copy deadline、BUSY/LOCKED 200回上限、unexpected statusの固定境界を守れない必要が生じた。
+- real schema/data verificationまたはtest-only restoreに明示deadlineまたは有限row/page境界を置けない、実data/schema mismatchまたはverification deadline超過をDDL前に`backup_failed`へできない、またはpartial/verified artifact setのcleanup失敗を`backup_cleanup_failed`へできない必要が生じた。
+- `SqliteDatabase.migrate()`以外をpublic mutation entryにする、public `run_migrations`またはpublic backup/restore/cleanup/diagnosticを追加する、typed Storeの`_read`をwrite lock内へ移す、またはproductionへglobal recorder/diagnostic surfaceを追加する必要が生じた。
 - `DomainEventValidationError`、`SqliteOperationError`、`MigrationError`へSQLiteの値・message・cause・context・custom attr・logを漏らす必要が生じた、または`DomainEventValidationError`を別exceptionへwrapする必要が生じた。
 - `SqliteDatabase`にpublic generic `read`/`write`、retry、workerを置く、readがwrite lockを取る、または`_read`の`query_only=ON`を主security boundaryと表現する必要が生じた。
 - `read_campaign`がcampaign全体の連番・全rowの`event_json`・derived columns・readbackを検証する前に返る、またはfiltered readが対象外の壊れたrowを無視する必要が生じた。
@@ -330,7 +334,8 @@ P1-03およびP1-08の実装開始前に、次のいずれかをユーザーが�
 - `SqliteDatabase`はdatabase pathとprocess内shared write serialization `threading.Lock`だけを所有する。
 - `sqlite3.Connection`は各operation内で生成・使用・closeし、object fieldへ保存しない。
 - `_write`と`migrate`は同じshared lockを保持し、同時に1つだけ実行する。readはlock外の別connectionを使う。
-- `_read`はconnectionごとに`PRAGMA query_only=ON`を設定する。これは多層防御であり、主security boundaryはpublic surfaceとrepository source guardである。
+- typed Storeの`_read`は従来どおりshared write lock外でoperationごとの別connectionを開き、`PRAGMA query_only=ON`を設定する。専用read backup sourceだけが、既存のmigrate lockと`BEGIN IMMEDIATE`済みmigration transaction内で開くprivate exceptionである。これは多層防御であり、主security boundaryはpublic surfaceとrepository source guardである。
+- migration backup中のsource、destination、reopen verifierは`migrations.py`の現在のprivate invocationが同一threadで所有し、各close完了まで他operationへ渡さない。promotion後のverified artifact setはoperator/test fixtureへ引き継ぐ。
 - `EventStore`だけがDomain Event tableをappendする。
 - `ProjectionStore`はEventを読み、削除可能なprojection snapshotだけを置換する。
 - `ObservationStore`はTranscript / Telemetryだけをappendする。
@@ -345,7 +350,7 @@ P1-03およびP1-08の実装開始前に、次のいずれかをユーザーが�
 - FastAPI route、SSE generator、threadpool間でConnectionを共有しない。
 - SQLite writeとmigrationはprocess内shared `threading.Lock`と`BEGIN IMMEDIATE`で直列化する。generic retry、worker、public write bypassは作らない。
 - `read`はoperationごとに別Connectionをlock外で開き、`isolation_level=None`、`busy_timeout=5000`、`synchronous=FULL`、`check_same_thread=True`を設定する。
-- `PRAGMA journal_mode=WAL`は初回migrate時にtransaction外で一度だけ設定する。WALの`-wal`/`-shm` sidecarはrepositoryへ置かない。
+- migration main connectionの`PRAGMA journal_mode=WAL` setterだけを初回migrate時にtransaction外で一度だけ許可する。dedicated source、copy destination、reopen verifierはjournal modeをread-onlyで実測し、setterを発行しない。WALの`-wal`/`-shm`とmigration artifact setはrepositoryへ置かない。
 - model invocationは同期boundaryとして扱い、SSEのasync generatorから`asyncio.to_thread()`で呼ぶ。
 - Diceはlocal `random.Random` instanceだけを使い、global random stateを変更しない。
 - Event sequenceはwrite transaction内で現在の最大sequenceを確認して採番競合を拒否する。
@@ -667,7 +672,7 @@ P1-00b後のguide-side policyは`src/neontof/persistence/**`だけをSQLite owne
 
 P1-01aでpersistenceのSQLite usageを導入する前に、guide-side scan policyを`src/neontof/persistence/**`だけをownerとして扱う内容へMyWorkflow正本で更新し、deployしてから、展開後に同じscanを再検証する。`docs/agent-guide/**`は直接編集しない。repository test-sideのguard変更とguide-sideの更新経路を混同せず、両方のevidenceが確認されるまでP1-01aをGREENにしない。文字列一致だけでalias/import変形を見逃す実装や、remote repair/pushによる迂回は認めない。
 
-P1-01、P1-11、P1-13のruntime/test DBはrepository tree外のtemporary pathまたはpytest `tmp_path`だけに置き、repository内の`*.sqlite`、`*.sqlite3`、`*.db`、`*.db-wal`、`*.db-shm`、`*.sqlite-wal`、`*.sqlite-shm`、raw DB backupを生成しない。P1-01aのmigration/atomicity、P1-11のserver start/readiness/rollback、P1-13のcomplete run/playtest/rollbackは、このDB locationとguard statusを同時に検証する。
+P1-01、P1-11、P1-13のruntime/test DBはrepository tree外のtemporary pathまたはpytest `tmp_path`だけに置き、repository内の`*.sqlite`、`*.sqlite3`、`*.db`、`*.db-wal`、`*.db-shm`、`*.sqlite-wal`、`*.sqlite-shm`、raw DB backupを生成しない。P1-01aではさらに`*.db-*`、`*.sqlite3-wal`、`*.sqlite3-shm`、partial/verified migration artifact、`.neontof-migration-backups`をrepository treeへ生成しない。P1-01aのmigration/atomicity、P1-11のserver start/readiness/rollback、P1-13のcomplete run/playtest/rollbackは、このDB locationとguard statusを同時に検証する。
 
 ### P1-01a — SQLite schemaとatomic Event Store
 
@@ -701,6 +706,9 @@ MigrationIssueCode = Literal[
     "duplicate",
     "out_of_order",
     "unknown_applied_version",
+    "unsupported_database",
+    "database_identity_mismatch",
+    "backup_cleanup_failed",
     "backup_failed",
     "sql_error",
 ]
@@ -756,7 +764,84 @@ def _materialize_event_json(
 ) -> tuple[bytes, DomainEvent]: ...
 ```
 
-`SqliteDatabase`のpublic surfaceは`migrate()`だけである。`path`以外のconnectionを保持せず、`_read(self, operation: Callable[[sqlite3.Connection], T]) -> T`、`_write(self, operation: Callable[[sqlite3.Connection], T]) -> T`、`_open_connection(self) -> sqlite3.Connection`はprivate exact signatureとして固定する。`_open_connection()`は`isolation_level=None`、`check_same_thread=True`、`PRAGMA busy_timeout=5000`、`PRAGMA synchronous=FULL`を設定する。`migrate()`はshared `threading.Lock`を保持したまま、初回だけmigration connection上でtransaction外に`PRAGMA journal_mode=WAL`を一度設定し、その後にmigration transactionを実行する。以後のno-op再実行ではschema/write/backupを行わない。`_read()`はlockを取らず、operationごとの別connectionに`PRAGMA query_only=ON`を設定してcallbackを実行し、connectionをcloseする。query-onlyはdefense-in-depthであり、主な境界はpublic surfaceとrepository guardである。`_write()`はshared `threading.Lock`を保持して`BEGIN IMMEDIATE`、callback、`COMMIT`を実行し、例外時は`ROLLBACK`してconnectionをcloseする。retryやworkerを暗黙に追加しない。
+`SqliteDatabase`のpublic surfaceは`migrate()`だけである。`migrations.py`のmodule-level `run_migrations`は存在せず、migration runnerはprivate `_run_migrations`へ閉じる。public backup/restore/cleanup/diagnostic API、generic read/write、retry、workerを追加しない。`path`以外のconnectionを保持せず、`_read(self, operation: Callable[[sqlite3.Connection], T]) -> T`、`_write(self, operation: Callable[[sqlite3.Connection], T]) -> T`、`_open_connection(self) -> sqlite3.Connection`はprivate exact signatureとして固定する。`_open_connection()`は`isolation_level=None`、`check_same_thread=True`、`PRAGMA busy_timeout=5000`、`PRAGMA synchronous=FULL`を設定する。`migrate()`はshared `threading.Lock`を保持したまま、初回だけmigration connection上でtransaction外に`PRAGMA journal_mode=WAL`を一度設定し、その後にmigration transactionを実行する。以後のno-op再実行ではschema/write/backupを行わない。`_read()`はshared write lockを取らず、operationごとの別connectionに`PRAGMA query_only=ON`を設定してcallbackを実行し、connectionをcloseする。query-onlyはdefense-in-depthであり、主な境界はpublic surfaceとrepository guardである。`_write()`はshared `threading.Lock`を保持して`BEGIN IMMEDIATE`、callback、`COMMIT`を実行し、例外時は`ROLLBACK`してconnectionをcloseする。retryやworkerを暗黙に追加しない。
+
+P1-01aのmigration backup helperは次のprivate exact signatureだけを持つ。全helperは`persistence/__init__.py`からexportせず、production global recorderやdiagnostic surfaceを追加しない。
+
+```python
+_BACKUP_DEADLINE_SECONDS: Final[float] = 10.0
+_BACKUP_VERIFY_DEADLINE_SECONDS: Final[float] = _BACKUP_DEADLINE_SECONDS
+_BACKUP_PAGES_PER_STEP: Final[int] = 256
+_BACKUP_RETRY_SLEEP_SECONDS: Final[float] = 0.05
+_BACKUP_MAX_BUSY_OR_LOCKED_RETRIES: Final[int] = 200
+_BACKUP_BUSY_TIMEOUT_MILLISECONDS: Final[int] = 5000
+_BACKUP_ROOT_NAME: Final[str] = ".neontof-migration-backups"
+_BACKUP_PARTIAL_MARKER: Final[str] = ".partial.sqlite3"
+_BACKUP_VERIFIED_MARKER: Final[str] = ".verified.sqlite3"
+
+def _open_backup_connection(path: Path, *, query_only: bool) -> sqlite3.Connection: ...
+
+def _is_same_file_database(
+    migration_connection: sqlite3.Connection,
+    backup_source: sqlite3.Connection,
+    database_path: Path,
+) -> bool: ...
+
+def _copy_database_with_deadline(
+    source: sqlite3.Connection,
+    destination: sqlite3.Connection,
+    *,
+    deadline_seconds: float = _BACKUP_DEADLINE_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> None: ...
+
+def _backup_existing_database(
+    migration_connection: sqlite3.Connection,
+    database_path: Path,
+) -> Path: ...
+
+def _verify_backup(
+    migration_connection: sqlite3.Connection,
+    backup_path: Path,
+    *,
+    expected_journal_mode: str,
+    deadline_seconds: float = _BACKUP_VERIFY_DEADLINE_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> None: ...
+
+def _remove_unverified_backup(backup_path: Path) -> None: ...
+
+def _run_migrations(
+    connection: sqlite3.Connection,
+    database_path: Path,
+) -> None: ...
+```
+
+`_backup_existing_database()`は`migration_connection`を比較元として受け取るが、そのconnectionから`Connection.backup()`を実行しない。`_run_migrations()`だけが`BEGIN IMMEDIATE`済みconnectionからこのhelperをprivateに呼び、copy直後destinationのjournal mode実値を`expected_journal_mode`としてverification chainへ渡す。productionの`_run_migrations()`にrestore責務を置かず、verified artifactをrestore sourceとして再openしない。
+
+`MigrationIssueCode`のmigration固有codeは次の意味とsanitized surfaceへ固定する。`unsupported_database`はPhase 1のfilesystem-backed regular file条件違反、`database_identity_mismatch`はcanonical requested path・migration `main.file`・dedicated source `main.file`の三者`samefile`不一致、`backup_cleanup_failed`は同じtokenのpartial/verified main・`-wal`・`-shm`全exact pathをcleanupできない状態、`backup_failed`はsource/destination open、copy、status、retry、deadline、close、reopen、journal mode、schema/data比較、promotionの失敗を表す。全て`MigrationError(code="...")`、固定message `migration failed`、元exceptionなしで公開し、path、OS message、SQLite value、sentinel、stack、cause、context、custom attributeを漏らさない。test-only restoreのfailureはproduction `MigrationError`へ変換しない。`DomainEventValidationError`、`DomainEventValidationIssue`、既存Domain `IssueCode`は変更しない。
+
+P1-01aのDBはfilesystem-backed regular fileに限定する。`:memory:`、`file:`/`file://` URI、`mode=memory`、`cache=shared`、directory、FIFO/device等のspecial file、regular fileでないexisting target、canonical pathを解決できないpath、空またはregular fileでない`PRAGMA database_list`の`main.file`は、source openとDDLより前に`MigrationError(code="unsupported_database")`へ変換する。新規DBは接続前にnon-strict canonical pathと親directoryを検証し、接続後の`main.file`をstrictに検証する。既存DBはsource open前に`Path.resolve(strict=True)`を完了する。
+
+source open前に、指定`database_path`のcanonical pathとmigration connectionの`PRAGMA database_list`にある`main.file`をregular fileとして検証し、`os.path.samefile()`で一致させる。source open後は、(1)指定pathのcanonical path、(2)migration connectionの`main.file`、(3)dedicated backup source connectionの`main.file`の三者を`os.path.samefile()`で検証する。relative pathはcanonicalization後に受理し、hard-link aliasも三者が同一fileなら受理する。別fileを開いたsource、指定pathとmigration `main.file`の不一致、指定pathとsource `main.file`の不一致は`MigrationError(code="database_identity_mismatch")`としてDDL前に停止する。
+
+source、destination、reopen verifierの`sqlite3.connect` kwargsは次だけに固定する。
+
+```python
+sqlite3.connect(
+    path,
+    timeout=5.0,
+    isolation_level=None,
+    check_same_thread=True,
+    uri=False,
+)
+```
+
+dedicated backup sourceとreopen verifierは`PRAGMA busy_timeout=5000`、`PRAGMA synchronous=FULL`、`PRAGMA query_only=ON`を設定して値`1`をreadbackする。copy destinationは同じ`busy_timeout`と`synchronous`を設定し、`query_only`が`0`であることをreadbackする。source、destination、reopen verifierに未指定kwargs、`uri=True`、別`factory`、`detect_types`、`autocommit`、別`isolation_level`、別`check_same_thread`を追加しない。source、destination、reopen verifierは同じthreadで開閉し、他operationへ渡さない。
+
+migration connectionも`timeout=5.0`、`isolation_level=None`、`check_same_thread=True`、`uri=False`、`PRAGMA busy_timeout=5000`、`PRAGMA synchronous=FULL`を固定し、`PRAGMA query_only`のreadbackを`0`として確認する。migration connectionの`main.file`はcanonical requested pathと`samefile`で一致し、copy destinationの`main.file`はpartial mainのcanonical path、reopen verifierの`main.file`はpartial mainのcanonical pathとそれぞれ`samefile`で一致しなければ`backup_failed`としてDDL前に停止する。destinationとreopen verifierはlive databaseとは別fileであることを確認し、artifact pathの文字列一致だけをidentityの根拠にしない。
+
+初回の`PRAGMA journal_mode=WAL` setterはmigration main connectionだけにtransaction外で一度だけ許可する。dedicated source、copy destination、reopen verifierのhelperは`PRAGMA journal_mode=...` setterを発行せず、read-onlyの実値だけを取得する。migration main、source、`Connection.backup()`直後destination、close/reopen後reopen verifierのjournal mode実値を同一operationで比較し、`wal`、`delete`その他の値へ固定しない。WAL sourceからbackupしたdestinationが`wal`となる実測を受け入れ、journal modeを`DELETE`へ強制しない。
 
 `EventStore`は`from neontof.event_metadata import EventBatch, EventDraftBody, StoredEvent`でneutral typeをimportし、`DomainEvent`をEvent Logへappendする唯一のownerである。`append(batch)`は未採番`EventDraftBody`を受け取り、同じ`BEGIN IMMEDIATE` transaction内でsequenceを割り当て、各draftについて`_materialize_event_json(*, body: EventDraftBody, sequence: int) -> tuple[bytes, DomainEvent]`を呼ぶ。public generic `SqliteDatabase.read()`は存在せず、typed Storeのreadだけを公開する。
 
@@ -778,21 +863,83 @@ EventStoreは固定順・compact JSONでenvelopeを構成し、bodyのscalar（`
 `migrate()`の順序と失敗境界は次のとおり固定する。
 
 ```text
-BEGIN IMMEDIATE
+SqliteDatabase.migrate()
+  → process-wide write lockを取得
+  → migration connectionを固定kwargsでopen
+  → canonical pathとmigration main.fileをsource open前かつDDL前に検証
+  → migration connectionだけで必要ならtransaction外にjournal_mode=WALを一度設定
+  → BEGIN IMMEDIATE
   → sqlite_masterでtype='table'のschema_migrations存在を確認
   → 存在しない場合はapplied setを空にし、schema_migrationsをSELECTしない
   → 存在する場合はtable shapeを検証してからschema_migrations read
   → migration file setとapplied version/name/checksumのvalidationおよびpending判定
-  → pendingかつ既存schema/dataがある場合だけ、migration source connectionからrepository tree外の新しいdestination connectionへSQLite Connection.backup()
-  → destinationをclose/reopenしてschema/dataを検証
+  → pendingかつ既存schema/dataがある場合だけdedicated read backup sourceをopen
+  → canonical path・migration main.file・source main.fileの三者samefile検証
+  → sourceからrepository外の新しいpartial destinationへConnection.backup()
+  → copy直後destinationのjournal mode実値をreadback
+  → destination/sourceをclose
+  → partial basenameのmain/-wal/-shm全exact path集合を確認
+  → partial mainをreopen verifierで開き、journal mode・identity・schema・table shape・全dataをdeadline付きで実比較
+  → reopen verifierをcloseし、partial basenameの全exact path集合を再確認
+  → clean close後に同一basenameのartifact setを対応するverified pathへpromotion、またはpartial/verified全exact pathをcleanup
+  → backup_verified
   → pending migrationのDDL
   → schema_migrations row insert
-COMMIT
+  → COMMIT
 ```
 
 `schema_migrations`の存在確認は`sqlite_master`への`type='table'`を含む明示的な照会で行う。存在しない場合だけapplied setを空にし、同tableへのSELECTを行わない。存在する場合は`PRAGMA table_info(schema_migrations)`等でtable shapeを検証してから読む。任意の`no such table`をbootstrap扱いにして握り潰さない。schema_migrationsのtable shape不一致、予期しないSQLite error、またはread failureはその場で安全な`MigrationError`として扱い、空setへ置換しない。available file setのversion重複、applied versionのduplicate、gap、out-of-order、unknown applied version、version/name/checksum driftのvalidationとpending判定は同じtransaction内でDDL前に行う。pendingがなければDDL、row insert、backupを行わず、no-op再実行とする。
 
-pending migrationがあり、DBに既存のnon-system schemaまたはdataがある場合だけ、write lockを保持したmigration source connectionから、repository tree外の新しいdestination connectionへ`sqlite3.Connection.backup()`を行う。destination connectionはcloseしてreopenし、`sqlite_master`、table shape、schema/dataを検証してからDDLへ進む。新規DB、zero-byte DB、または既存schema/dataがなくbackup不要な場合はcopyしない。backup失敗はDDLまたは`schema_migrations` row insertより前に安全な`MigrationError(code="backup_failed")`へ変換し、rollbackしてDDLへ進まない。copyはProduct Plan §20のWeb backup機能を先取りするものではなく、W-Dで必要な最小copyである。backup fileと`-wal`/`-shm` sidecarはGitへ入れない。
+pending migrationがあり、DBに既存のnon-system schemaまたはdataがある場合だけ、write lockと`BEGIN IMMEDIATE`を保持したmigration transaction内で専用read backup sourceをopenする。migration connection自身を`Connection.backup()`のsourceにせず、sourceからrepository tree外の新しいpartial destinationへcopyする。destination、source、reopen verifierをcloseし、copy直後destinationとclose/reopen後verifierのjournal mode実値がmigration main/sourceのreadback実値と同値であることを検証する。partial basenameのmain/`-wal`/`-shm`を一つのartifact setとしてclean close後にpromotionし、集合不整合、実schema/data mismatch、copyまたはverification deadline超過、unexpected status、close失敗、promotion失敗時はDDL前に停止して全exact path cleanupを行う。cleanup不能時は`MigrationError(code="backup_cleanup_failed")`、その他は`MigrationError(code="backup_failed")`へsanitizedに変換する。新規DB、zero-byte DB、または既存schema/dataがなくbackup不要な場合はcopyしない。copyとverificationはProduct Plan §20のWeb backup機能を先取りするものではなく、W-Dで必要な最小copyである。backup file、partial/verified artifact set、`-wal`/`-shm`はGitへ入れない。
+
+copyの呼び出しは次だけに固定する。
+
+```python
+source.backup(
+    destination,
+    pages=_BACKUP_PAGES_PER_STEP,
+    sleep=_BACKUP_RETRY_SLEEP_SECONDS,
+    name="main",
+    progress=progress,
+)
+```
+
+copy開始時の`time.monotonic()`に`_BACKUP_DEADLINE_SECONDS == 10.0`秒を加え、callbackごと、BUSY/LOCKED retry前、`backup()` return直後にdeadlineを確認する。`SQLITE_OK`は`0 <= remaining < total`のcopy進行中statusとして受理し、`SQLITE_DONE`は`remaining == 0`の最終statusとしてだけ成功扱いにする。`SQLITE_BUSY`/`SQLITE_LOCKED`は最大`_BACKUP_MAX_BUSY_OR_LOCKED_RETRIES == 200`回までretryし、上限、deadline、SQLite例外、unexpected status、invalid progress、`SQLITE_DONE`なしのreturnは`MigrationError(code="backup_failed")`へ変換する。`pages=1`とscripted `monotonic`で`SQLITE_OK`を継続させても、`SQLITE_DONE`前の10秒超過でDDL/schema row writeを0にする。
+
+`_verify_backup()`には`_BACKUP_VERIFY_DEADLINE_SECONDS == 10.0`秒を適用する。schema object、table shape、row/page batchの開始前とquery完了後に`monotonic`を確認し、全schema/data比較がdeadline内に完了しない場合はpromotionせず、partial/verifiedの全exact pathをcleanupして`MigrationError(code="backup_failed")`でDDL前に停止する。無期限のrow iterator、無制限の比較loop、deadlineを確認しない`fetchall`依存を許可しない。
+
+backup rootはcanonical database pathのparentに隣接するrepository tree外の次のdirectoryに固定する。
+
+```text
+<canonical database path.parent>/.neontof-migration-backups/
+```
+
+root、partial artifact set、verified artifact setは`migrations.py`の現在のbackup invocationが所有する。background cleanup、global共有temp root、Web UI、generic backup service、public restore API、artifact一覧・世代管理・公開diagnosticを追加しない。
+
+artifactはdatabase basenameと一意のlowercase hexadecimal tokenを含み、partialとverifiedそれぞれについて同一basenameのmain/`-wal`/`-shm`全exact pathを候補集合とする。
+
+```text
+<database.name>.migration-<lowercase-hex-token>.partial.sqlite3
+<database.name>.migration-<lowercase-hex-token>.partial.sqlite3-wal
+<database.name>.migration-<lowercase-hex-token>.partial.sqlite3-shm
+<database.name>.migration-<lowercase-hex-token>.verified.sqlite3
+<database.name>.migration-<lowercase-hex-token>.verified.sqlite3-wal
+<database.name>.migration-<lowercase-hex-token>.verified.sqlite3-shm
+```
+
+copy destinationは新規regular fileとし、journal modeを`DELETE`へ固定しない。`Connection.backup()`直後、destinationがopenの状態でjournal modeの実値をread-onlyで取得して記録し、destinationとdedicated sourceをcloseする。close後にpartial basenameのmain、同じbasenameの`-wal`、同じbasenameの`-shm`をそれぞれexact pathで確認する。partial mainをreopen verifierで開き、migration main・source・copy直後destination・close/reopen後verifierのjournal mode実値、identity、schema、table shape、全dataを比較する。reopen verifierをcloseした後に同じ全exact path集合を再確認し、clean closeが成立した場合だけpromotionまたは全exact path cleanupへ進む。
+
+sidecarが存在する場合はpartial mainだけをverifiedへrenameせず、同一basenameのpartial全存在pathを対応するverified全pathへ同じtokenのままpromotionする。sidecarが存在しない場合だけpartial mainをverified mainへpromotionする。異なるbasenameのsidecar、partial/verified間で不揃いなpath、close後のpath変化、close失敗、promotion途中の失敗を検出した場合はpromotionせず、partial main、partial `-wal`、partial `-shm`、同じtokenのverified main、verified `-wal`、verified `-shm`の全exact pathをcleanup対象にする。いずれかを削除できなければ`MigrationError(code="backup_cleanup_failed")`としてDDL前に停止し、全pathのcleanupに成功した場合は`MigrationError(code="backup_failed")`としてDDL前に停止する。無関係なpath、別basenameのsidecar、globによる無差別削除、recursive deleteは使わない。
+
+promotion後のverified artifact setは、同一basenameでpromotion時に存在したmain、`-wal`、`-shm`だけを保持し、別basenameのsidecarを引き継がない。成功`COMMIT`後も、verified化後の後続DDL failureでlive DBをrollbackする場合も、verified artifact setはoperator/test fixtureへ引き継いで保持する。operator/testが明示的に保持期間を終えた場合だけ同一basenameのverified全exact pathをcleanupし、そのcleanup failureは成功扱いにしない。migrationはartifact pathをpublic return、通常log、DB rowへ書かない。
+
+`_verify_backup(migration_connection, backup_path, *, expected_journal_mode, deadline_seconds, monotonic)`は、destination/sourceのclose完了後にpartial mainをreopen verifierで開き、`sqlite_master`、各tableの`PRAGMA table_info`/`index_list`/`index_xinfo`/table SQL、全tableの全row、BLOB bytes、`schema_migrations`、`events`のderived columns、`typeof(event_json) = 'blob'`、raw `event_json` bytesを実比較する。文字列、file size、checksum、mockのverify callだけを成功根拠にしない。全schema/data比較を読み終えるまでrow/page batchごとにdeadlineを確認し、実data/schema mismatchまたはverification deadline超過はpromotionせず`backup_failed`としてDDL前に停止する。
+
+test-only timelineはproductionへglobal recorder、diagnostic field、Telemetry、通常logを追加せず、各private helperの実関数へ委譲するspyと、test側だけでmigration connectionへ設定する`set_trace_callback`を組み合わせて記録する。spyはイベント記録後に実helperを実行し、trace callbackはmigration connectionの実SQLを同じtest-local timelineへ記録する。copy直後のpartial artifact変更が必要なtestは、実際のcopy helperを委譲するprivate helper spyまたはtest-only filesystem substitutionをdestination/sourceのclose後かつreal `_verify_backup()`前に挿入し、partialの同一basename main/`-wal`/`-shm`を別connectionで実際に変更する。verifierの成功値をmock注入しない。
+
+最低限のtest-local timelineは`begin_immediate`、`backup_source_opened`、`three_way_identity_verified`、`destination_opened`、`copy_progress_SQLITE_OK`、`copy_done_SQLITE_DONE`、`destination_journal_mode_recorded`、`destination_closed`、`source_closed`、`partial_artifact_set_checked`、`reopen_verifier_opened`、`pragma_compared`、`schema_compared`、`table_shape_compared`、`data_compared`、`reopen_verifier_closed`、`partial_artifact_set_rechecked_after_close`、`artifact_promoted`、`backup_verified`、`ddl`、`schema_row_insert`、`commit`とする。実schema/data比較とartifact set promotionが完了した後にだけ`backup_verified`を記録し、`backup_verified < ddl`を同じtimelineでassertする。production timelineにrestoreを含めない。
+
+restoreの責務はtest-onlyの独立検証に限定する。productionの`_run_migrations()`と`_backup_existing_database()`はverified artifactをrestore sourceとして再openせず、restore API/helperを持たない。`test_verified_backup_artifact_restores_schema_and_data`だけが、成功commit後または後続DDL failure後に保持されたverified basenameのmainを同一basenameの`-wal`/`-shm`と共にreopenし、disposable regular destinationへ実際にSQLite backupしてmigration前のschema、table shape、全data、BLOB、derived columnsを比較する。このcopyは`_copy_database_with_deadline()`を使い、schema/data比較も`_BACKUP_VERIFY_DEADLINE_SECONDS`または明示的row/page batch境界でboundedにする。test-only restoreのdeadline超過や不一致を成功扱いにしない。
 
 SQLite例外の境界は二段に固定する。既存`DomainEventValidationError`と`DomainEventValidationIssue`/`IssueCode`は`src/neontof/contracts/event_parser.py`およびcore specの既存契約を変更せず、parser、sequence、projection validationだけに使う。Event Storeは、同じwrite transaction内の事前照合でduplicate `event_id`を検出し、`EventStoreConstraintError(code="duplicate_event_id")`へ写像する。事前照合で検出されないその他の`sqlite3.IntegrityError`は`EventStoreConstraintError(code="event_constraint_violation")`へ写像する。payload/envelope/sequence/readback validationから生じた既存`DomainEventValidationError`はsanitizedな既存issue codeのまま送出し、`EventStoreConstraintError`へwrapしない。
 
@@ -876,6 +1023,37 @@ CREATE TABLE events (
 - `test_new_database_does_not_create_backup`
 - `test_noop_migration_does_not_backup_or_write`
 - `test_backup_failure_prevents_ddl_and_schema_row_insert`
+- `test_backup_reopen_verification_precedes_ddl`
+- `test_backup_sidecar_state_is_closed_before_promotion`
+- `test_backup_verifier_rejects_actual_data_mismatch_before_ddl`
+- `test_backup_verifier_deadline_stops_before_ddl`
+- `test_backup_source_uses_fixed_query_only_pragmas`
+- `test_backup_source_destination_and_reopen_use_exact_connection_kwargs`
+- `test_backup_connections_never_set_journal_mode`
+- `test_backup_source_query_only_write_sabotage_fails`
+- `test_backup_source_is_not_migration_connection`
+- `test_backup_accepts_sqlite_ok_progress_until_done`
+- `test_backup_deadline_applies_while_sqlite_ok_progresses`
+- `test_backup_busy_deadline_stops_retry_before_ddl`
+- `test_backup_unexpected_progress_status_fails_before_ddl`
+- `test_backup_closes_source_destination_and_verification_connections`
+- `test_backup_validates_migration_main_file_before_source_open`
+- `test_backup_accepts_relative_database_path`
+- `test_backup_accepts_hard_link_database_alias`
+- `test_backup_rejects_database_identity_mismatch_before_ddl`
+- `test_backup_required_for_in_memory_database_fails_before_ddl`
+- `test_backup_rejects_uri_directory_and_special_file_before_ddl`
+- `test_backup_artifacts_use_database_adjacent_root_and_exact_names`
+- `test_unverified_backup_artifact_and_sidecars_are_removed`
+- `test_verified_backup_artifact_is_retained_after_commit`
+- `test_verified_backup_artifact_is_retained_when_later_ddl_fails`
+- `test_verified_backup_artifact_restores_schema_and_data`
+- `test_verified_backup_restore_is_bounded`
+- `test_backup_timeline_records_schema_data_verify_before_ddl`
+- `test_backup_cleanup_failure_is_sanitized`
+- `test_sqlite_database_public_mutation_surface_is_only_migrate`
+- `test_migrations_runner_is_private`
+- `test_repository_guard_rejects_public_migration_runner`
 - `test_event_json_persists_exact_assembled_bytes`
 - `test_materialized_domain_event_matches_body_and_assigned_sequence`
 - `test_payload_json_requires_single_root_object`
@@ -893,7 +1071,6 @@ CREATE TABLE events (
 - `test_database_error_becomes_safe_sqlite_operation_error`
 - `test_domain_event_validation_error_is_not_wrapped`
 - `test_migration_error_does_not_leak_sqlite_details`
-- `test_backup_reopen_verification_precedes_ddl`
 - `test_repository_guard_rejects_sqlite_wal_sidecars_and_db_variants`
 
 `test_materialized_domain_event_matches_body_and_assigned_sequence`はscalar/envelopeの`type`、`event_id`、`event_version`、`campaign_id`、`session_id`、`scene_id`、`turn_id`、transaction assigned `sequence`、`occurred_at`、`origin`、`visibility`の全fieldをstrict assertし、typed payload validationの成功と、persisted exact assembled `event_json`内のouter `payload` byte spanが元の`payload_json` bytesと一致することを別々にassertする。`model_dump*`や既存`FrozenJsonValue`のlossy representationを比較根拠にしない。
@@ -903,13 +1080,25 @@ CREATE TABLE events (
 `test_migration_validation_and_pending_detection_stay_inside_transaction`はpending判定をtransaction外へ出さないことを、`test_migration_ddl_and_schema_row_share_transaction`はmigration DDLと`schema_migrations` row insertを同じtransactionでcommitすることを確認する。
 `test_duplicate_event_id_becomes_sanitized_event_store_constraint_error`は同じwrite transaction内の事前照合で`EventStoreConstraintError(code="duplicate_event_id")`になることを、`test_other_integrity_error_becomes_generic_event_constraint_violation`はその他の`sqlite3.IntegrityError`が`EventStoreConstraintError(code="event_constraint_violation")`になることを確認する。`test_domain_event_validation_error_keeps_phase_zero_issue_codes`はpayload/envelope/sequence/readback validationの既存`DomainEventValidationError`がPhase 0の既存issue codeのまま伝播し、Event Store constraint errorへ変換されないことを確認する。これらと`test_database_error_becomes_safe_sqlite_operation_error`、`test_migration_error_does_not_leak_sqlite_details`はsecretを埋めたsabotage exceptionを使い、message、args、cause、context、custom attr、logのどこにも元exceptionが残らず、安全なcodeだけが出ることを確認する。
 
+P1-01aのbackup testは、`test_pending_migration_backups_existing_database_before_ddl`でprocess-wide write lockと`BEGIN IMMEDIATE`後、DDL/schema row write前にdedicated sourceを開き、sourceがmigration connectionと別objectで、三者`samefile`が成立し、repository tree外の新しいpartial destinationへ実copyすることを確認する。`test_backup_reopen_verification_precedes_ddl`はmigration main/source/copy直後destination/close-reopen後reopen verifierのjournal mode実readback値一致、destination/source close、partial artifact set確認、real schema/data比較、reopen verifier close、path再確認、同一basename set promotion、`backup_verified`、DDLの順をtest-local timelineでassertする。production timelineにrestoreを含めない。
+
+`test_backup_sidecar_state_is_closed_before_promotion`は`Connection.backup()`直後のdestination実journal modeをreadbackし、destination/source/reopen verifierがclean closeした後にpartial basenameのmain/`-wal`/`-shm`全exact pathを確認する。sidecarがあればmainだけをrenameせず、同一basenameの存在pathを対応するverified pathへpromotionし、不整合またはpromotion失敗ならpartial/verified全exact pathをcleanupする。削除不能は`backup_cleanup_failed`、DDL/schema row writeは0とする。`test_backup_verifier_rejects_actual_data_mismatch_before_ddl`は実copy helperを委譲するtest-only spyまたはfilesystem substitutionをcopy直後・destination/source close後・real `_verify_backup()`前に挿入し、partial artifactのschemaとdataを別connectionで実際に変更する。mockの成功値を使わずreal verifierが`backup_failed`を返し、DDL/schema row writeが0、cleanupが完了することを確認する。
+
+`test_backup_source_uses_fixed_query_only_pragmas`、`test_backup_source_destination_and_reopen_use_exact_connection_kwargs`、`test_backup_connections_never_set_journal_mode`はsource/destination/reopen verifierのkwargs、`busy_timeout=5000`、`synchronous=FULL`、query-only、journal mode setter禁止、migration main/source/copy直後destination/close-reopen後verifierの実readback値一致を個別にassertする。`test_backup_source_query_only_write_sabotage_fails`、`test_backup_source_is_not_migration_connection`はsourceのwrite拒否とmigration connection自身をsourceにしないことを確認する。`test_backup_accepts_sqlite_ok_progress_until_done`、`test_backup_deadline_applies_while_sqlite_ok_progresses`、`test_backup_busy_deadline_stops_retry_before_ddl`、`test_backup_unexpected_progress_status_fails_before_ddl`は`SQLITE_OK`進行、`pages=1`、scripted `monotonic`、10秒deadline、BUSY/LOCKED 200回上限、unexpected statusを固定し、failure時はDDL/schema row writeを0にする。`test_backup_verifier_deadline_stops_before_ddl`はreal schema/data比較中の10秒verification deadline超過を`backup_failed`としてDDL前に止め、promotionとDDL/schema row writeを0、全exact path cleanupをassertする。
+
+`test_backup_validates_migration_main_file_before_source_open`、`test_backup_accepts_relative_database_path`、`test_backup_accepts_hard_link_database_alias`、`test_backup_rejects_database_identity_mismatch_before_ddl`、`test_backup_required_for_in_memory_database_fails_before_ddl`、`test_backup_rejects_uri_directory_and_special_file_before_ddl`はfilesystem-backed regular file、canonical path、migration `main.file`、source `main.file`の三者identityを実filesystemで確認し、不正variantを`unsupported_database`または`database_identity_mismatch`としてDDL前に止める。`test_backup_artifacts_use_database_adjacent_root_and_exact_names`、`test_unverified_backup_artifact_and_sidecars_are_removed`、`test_verified_backup_artifact_is_retained_after_commit`、`test_verified_backup_artifact_is_retained_when_later_ddl_fails`はrepository外root、同一basenameのmain/`-wal`/`-shm`全exact path、owner、promotion、cleanup、commit後・後続DDL failure後の保持を確認する。`test_verified_backup_artifact_restores_schema_and_data`はproductionとは独立してverified artifact setをdisposable destinationへrestoreし、`test_verified_backup_restore_is_bounded`はrestore copyとschema/data比較にdeadlineまたは有限row/page batch境界を適用する。両testはrestore APIやproduction timelineを追加しない。
+
+`test_backup_timeline_records_schema_data_verify_before_ddl`は、test-localのprivate helper spyが実helperへ委譲したイベントと、migration connectionへtest側だけで設定した`set_trace_callback`の実SQLイベントを同一timelineへ記録し、実schema/data比較・artifact set promotion完了後の`backup_verified < ddl < schema_row_insert`をassertする。productionへglobal recorder、diagnostic field、Telemetry、通常logを追加しない。`test_backup_cleanup_failure_is_sanitized`はpartial/verified全exact pathの削除不能を`backup_cleanup_failed`とし、残存path、OS message、sentinel、元exceptionをsurfaceへ漏らさないことを確認する。`test_sqlite_database_public_mutation_surface_is_only_migrate`、`test_migrations_runner_is_private`、`test_repository_guard_rejects_public_migration_runner`は`migrate()`以外のpublic mutation、module-level `run_migrations`、public backup/restore/cleanup/diagnosticを拒否する。`tests/test_repository_contracts.py`の`test_repository_guard_rejects_sqlite_wal_sidecars_and_db_variants`はrepository tree内の`*.sqlite`、`*.sqlite3`、`*.db`、`*.sqlite-wal`、`*.sqlite-shm`、`*.sqlite3-wal`、`*.sqlite3-shm`、`*.db-wal`、`*.db-shm`、partial/verified migration artifact、backup rootを拒否する。
+
+既存のchecksum/driftテスト（`test_migration_rejects_version_name_checksum_drift_before_ddl`、`test_migration_rejects_gap_duplicate_out_of_order_and_unknown_version_before_ddl`）、BLOB/derived検証テスト（`test_event_json_storage_type_is_blob`、`test_materialized_domain_event_matches_body_and_assigned_sequence`）、read-lock境界テスト（`test_read_uses_separate_connection_outside_write_lock`、`test_read_connection_enables_query_only_as_defense_in_depth`）も、P1-01aのdedicated source、artifact lifecycle、real schema/data verification、既存のlock外`_read`契約を同時に検査するよう強化する。`tests/test_repository_contracts.py`のpublic surface/DB variant guardは、P1-01aのprivate runnerと同一basename artifact setを含む形で強化する。
+
 **実装前の検証条件**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/persistence/test_migrations.py tests/persistence/test_event_store.py tests/test_repository_contracts.py -q
 ```
 
-実装前のfocused commandでは、missing module、`0001_event_store.sql`のschema-set assertion、migration validation/backup順序、fixed PRAGMA/lock、atomicity、payload boundary（root object、strict UTF-8、trailing token、全階層duplicate key、fragment override）、campaign全列read、filter fail-closed、exception sanitization、production manifestの追記漏れまたは未許可pathを失敗理由として確認できる。collection errorや0 testだけを失敗根拠にしない。
+実装前のfocused commandでは、missing module、`0001_event_store.sql`のschema-set assertion、migration validation/backup順序、専用source ownership、fixed connection kwargs/PRAGMA、filesystem identity、journal mode実値一致、artifact set lifecycle、bounded copy/verification/restore、atomicity、payload boundary（root object、strict UTF-8、trailing token、全階層duplicate key、fragment override）、campaign全列read、filter fail-closed、exception sanitization、production manifestの追記漏れまたは未許可pathを失敗理由として確認できる。collection errorや0 testだけを失敗根拠にしない。
 
 ```text
 focused command exit non-zero with a failure reason tied to the missing implementation or one of the listed boundary assertions
@@ -917,11 +1106,11 @@ focused command exit non-zero with a failure reason tied to the missing implemen
 
 **完了条件**
 
-同じcommandがexit `0`となり、`tests/test_repository_contracts.py`のmanifest/forbidden guardもpassしたうえで、`0001_event_store.sql`が`schema_migrations`と`events`だけを作り、schema-setのapplied version最大値が1で欠落・未知versionがないことをevidenceとして示す。raw SQL bytes SHA-256、version/name/checksum drift、gap/duplicate/out-of-order/unknown applied versionのDDL前検証、必要時だけのrepository tree外SQLite backup API copy、backup失敗時のDDL無実行、no-op時のbackup/write無実行、DDLとschema rowの同一transactionが成立する。
+同じcommandがexit `0`となり、`tests/test_repository_contracts.py`のmanifest/forbidden guardもpassしたうえで、`0001_event_store.sql`が`schema_migrations`と`events`だけを作り、schema-setのapplied version最大値が1で欠落・未知versionがないことをevidenceとして示す。raw SQL bytes SHA-256、version/name/checksum drift、gap/duplicate/out-of-order/unknown applied versionのDDL前検証、`SqliteDatabase.migrate()`だけのpublic mutation entry、private `_run_migrations`、必要時だけの`BEGIN IMMEDIATE`後dedicated sourceによるrepository tree外SQLite backup API copy、三者`samefile`、journal mode実値一致、同一basename artifact setのpromotion/cleanup、backup失敗・実data/schema mismatch・verification deadline超過時のDDL無実行、no-op時のbackup/write無実行、DDLとschema rowの同一transactionが成立する。
 
 strict UTF-8、single root object、全入力消費、trailing token拒否、全階層duplicate key拒否、fragment override拒否、nested object/array shape distinction、payload boundary failure時のbatch全体rollbackも成立する。固定順compact envelopeへbody scalarとassigned sequenceを一度ずつ出力し、検証済みpayload bytesをouter `payload` valueへ一度だけ挿入したexact assembled bytesが既存parserに受理され、scalar/envelope全fieldのstrict一致、typed payload validation、persisted `event_json`のpayload byte span一致が別々に成立し、そのexact bytesが保存される。
 
-`SqliteDatabase`にpublic generic read/write、retry、workerがなく、fixed PRAGMAとsingle writer lockが成立する。`read_campaign`が全sequenceと全rowを検証してから返り、typed Storeのfiltered readが同じ完全列からだけ結果を作り、対象外rowの破損でもfail-closedになる。validated lifecycle payloadによるturn request検索とunsequenced envelope materializationの境界も成立し、caller側にsequence割当やgeneric public writeが存在しないこともassertする。Integrity/Database/Migrationのexceptionは安全なcodeだけを持ち、元exceptionを漏らさない。runtime/test DBはrepository tree外のtemporary pathまたはpytest `tmp_path`だけに置く。`PRAGMA table_info(...)`、`PRAGMA index_list(...)`、`PRAGMA index_xinfo(...)`、`sqlite_master.sql`、`typeof(event_json) = 'blob'`、NOT NULL/CHECK/UNIQUE sabotage、backup close/reopen後のschema/data検証もpassする。
+`SqliteDatabase`にpublic generic read/write、retry、worker、public `run_migrations`、public backup/restore/cleanup/diagnosticがなく、fixed connection kwargs/PRAGMA、journal mode実値一致、single writer lockが成立する。`read_campaign`が全sequenceと全rowを検証してから返り、typed Storeのfiltered readが同じ完全列からだけ結果を作り、対象外rowの破損でもfail-closedになる。validated lifecycle payloadによるturn request検索とunsequenced envelope materializationの境界も成立し、caller側にsequence割当やgeneric public writeが存在しないこともassertする。Integrity/Database/Migrationのexceptionは安全なcodeだけを持ち、元exceptionを漏らさない。runtime/test DBとbackup rootはrepository tree外のtemporary pathまたはpytest `tmp_path`だけに置く。`PRAGMA table_info(...)`、`PRAGMA index_list(...)`、`PRAGMA index_xinfo(...)`、`sqlite_master.sql`、`typeof(event_json) = 'blob'`、NOT NULL/CHECK/UNIQUE sabotage、backup close/reopen後のreal schema/data検証、artifact set promotion/cleanup、bounded verifier、test-only restoreもpassする。
 
 **コミット境界**
 
@@ -942,7 +1131,9 @@ feat: append-onlyなSQLite Event Storeと原子性を実装する
 - public State update methodが存在しない
 - `0001_event_store.sql`適用後のschema-setが`schema_migrations`と`events`だけで、最大適用versionが1
 - raw SQL bytes SHA-256、version/name/checksum drift、gap/duplicate/out-of-order/unknown applied versionのDDL前拒否
-- pending existing schema/dataだけでrepository tree外backup API copy、backup failure時DDLなし、新規DB/no-op時backup/writeなし
+- pending existing schema/dataだけで`BEGIN IMMEDIATE`後のdedicated sourceからrepository tree外backup API copy、source/migration/destination/reopenのidentity・journal mode実値一致、backup failure・実data/schema mismatch・verification deadline超過時DDLなし、新規DB/no-op時backup/writeなし
+- partial/verifiedの同一basename main/`-wal`/`-shm` artifact setのclean close後promotion、全exact path cleanup、cleanup failure時`backup_cleanup_failed`、成功commit時・後続DDL failure時のverified artifact set保持
+- test-onlyのprivate helper委譲spy・migration connection `set_trace_callback` timeline、copy後partial改変からreal verifierが返すfailure、bounded test-only restore
 - `read_campaign`の全sequence/全row/derived/readback検証、inspection-only filter、対象外破損rowでfail-closed
 - fixed SQLite PRAGMA、shared write lock、別connection read、safe exception code、元exception非漏洩
 
@@ -3279,6 +3470,16 @@ Phase 2はこのcommit後も自動開始しない。ユーザーの明示指示�
 
 Repository rootで次を順番どおり実行する。
 
+### P1-01a focused migration verification
+
+P1-01aのtests追加後、実装変更前に次を実行し、missing private runner、dedicated source ownership、filesystem identity、fixed connection kwargs/PRAGMA、journal mode実値一致、progress、artifact set、bounded schema/data verification、test-only restore、public surface/DB variant guardのいずれかに結び付くfailureを確認する。collection errorや0 testだけをREDの根拠にしない。
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/persistence/test_migrations.py tests/persistence/test_event_store.py tests/test_repository_contracts.py -q
+```
+
+最小実装後は同じfocused commandを再実行する。GREENはexit `0`、failure `0`であり、実schema/data比較、`backup_verified < ddl`の同一test-local timeline、journal mode実値一致、artifact set promotion/cleanup、identity/PRAGMA/query_only/close/reopen、verification deadline、test-only restoreのbounded条件を含む。fake call countだけの一致をGREENとしない。
+
 ## Runtimeと依存
 
 ```powershell
@@ -3400,6 +3601,8 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 - C-03のProvider request boundaryとprovider approvalが未確定である。
 - DomainEvent envelopeにtop-levelの`turn_request_id`がなく、producer coordination metadataとwire envelopeを混同できない。
 - payloadはexact raw JSON bytes境界を必要とし、typed modelのserializationや既存`FrozenJsonValue`の推測round-tripを永続化の根拠にできない。
+- P1-01aのmigration backupはdedicated read source、migration main、copy destination、reopen verifierのconnection lifecycleとfilesystem identityをDDL前に揃える必要があり、journal modeを`DELETE`へ固定せず実readback値を一致させる必要がある。WAL時の同一basename `main`/`-wal`/`-shm` artifact setを個別fileとして扱うとpromotionまたはcleanupの原子性を失う。
+- partial artifactのreal schema/data verificationとtest-only restoreはcopyと別のboundednessを必要とし、`SQLITE_OK`継続、actual mismatch、verification deadline超過をDDL前に失敗させないと未検証artifactを承認済み状態として扱う危険がある。test-only timelineをproduction global recorderへ実装するとpublic diagnostic surfaceを拡張する。
 - production manifestはP1-00b後も完全一致で検査され、各WPが自分のproduction `.py` pathを明示追加する必要がある。P1-10a以降のclient/generated path、forbidden path、CI gate、persistence限定のSQLite scopeを同じguardで扱うため、WPごとの追加漏れと誤った一律禁止がリスクになる。
 - `tests/test_repository_contracts.py`を共有するproduction WPを並列実行すると、exact manifest追記のlost updateまたは別WPの未検証entryをGREENにするリスクがある。manifest serialization laneで一つずつ着地させる。
 
@@ -3411,6 +3614,7 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 - P1-08でlosslessなraw boundaryが不足した場合、Phase 0 semantic contractの改訂または別の承認済みboundaryなしに進められない。
 - repository test-sideのAST/import-aware SQLite scanと、`docs/agent-guide/build-and-verify.md`に定義されたguide-side scanの更新経路を混同すると、alias/import変形または許可範囲の不整合を見逃す。
 - runtime/test DBをrepository tree内へ作ると、生成物・秘密・rollback対象の境界が壊れる。P1-01、P1-11、P1-13はrepository tree外temporary pathまたはpytest `tmp_path`に限定する。
+- relative path、hard-link alias、URI/in-memory、directory、special file、別fileのidentity判定をpath文字列だけで行うと、sourceがmigration mainと異なるfileを受理する。canonical path、migration `main.file`、source `main.file`の三者`samefile`をsource open前後の正しい境界で検証する。
 
 ## リスク対策
 
@@ -3423,7 +3627,8 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 - dependency commitを通過するまで後続integrationを開始しない。
 - SQLite migrationは`0001_event_store.sql`、`0002_projection_snapshots.sql`、`0003_observation_stores.sql`、`0004_turn_requests.sql`に分割し、各WPが自分のadditive migrationだけを追加する。down migrationは作らない。
 - migration runnerはraw SQL bytes SHA-256、version/name/checksum drift、gap/duplicate/out-of-order/unknown applied versionをDDL前に検証し、pending判定からDDL・schema row insert・COMMITまでを一つのtransactionに置く。
-- pendingかつ既存schema/dataがある場合だけ、lock保持下でrepository tree外へSQLite backup API copyを作る。新規DB・backup不要・no-opでは作らず、backup失敗時はDDLを実行しない。backup file/sidecarをGitへ追加しない。
+- P1-01aのpending existing schema/dataだけ、process-wide write lockと`BEGIN IMMEDIATE`内でdedicated read sourceを開き、migration connection自身をsourceにせず、固定connect kwargs/PRAGMA、三者`samefile`、copy直後destinationとclose/reopen後verifierのjournal mode実値一致を確認する。source→partial copy→close→reopen verifier→deadline付きreal schema/data比較→同一basename artifact setのclean close後promotionまたは全exact path cleanup→`backup_verified`→DDL→schema row insert→COMMITを固定し、新規DB/no-opではcopyしない。
+- P1-01aのcopyは`pages=256`、`sleep=0.05`、`SQLITE_OK`進行を許可し、10秒deadlineとBUSY/LOCKED 200回上限を適用する。partial/verified main/`-wal`/`-shm`のfull exact pathを一つのsetとして扱い、cleanup不能は`backup_cleanup_failed`、その他のcopy/verification/status/identity failureは`backup_failed`としてDDL前に止める。backup側journal mode setterとproduction global recorder/diagnostic surfaceは作らない。
 - `read_campaign`の全列検証をprojection/status/dice/public projection/recoveryの共通入力とし、typed filter、snapshot、coordination record、observationだけを入力にする経路を作らない。
 - Event appendとObservation appendを別transactionにし、Projection snapshotはwrite lock内でmonotonic upsertする。request dedupeの全identity照合とresume context validationはP1-03の同一transaction内で行う。
 - Event rowをmigrationで書き換えない。
@@ -3442,6 +3647,7 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 - C-02が未承認またはblockingの場合はP1-09とその依存integrationを開始せず、provisional detailのschemaを作らない。
 - C-03が未承認またはblockingの場合はP1-06 Fake/Recorded Gatewayとその依存integrationを開始せず、GatewayのGREEN/commitを保留する。provider approvalが未承認またはblockingの場合はP1-06 concrete real Provider adapterとP1-07以降のprovider-dependent integrationを開始せず、real adapterのGREEN/commitを保留する。承認だけで固定responseや曖昧なadapterへfallbackしない。Fake / Recordedのlocal validationはprovider approval前も継続できる。
 - P1-00またはP1-00bのmetadata、exact manifest、repository guard、envelope契約が失敗した場合はP1-01以降を開始せず、P0契約や禁止pathを変更しない。
+- P1-01aのbackup/verification failureではmigration transactionをrollbackし、DDL/schema row insertを行わない。partial/verifiedの同一basename main/`-wal`/`-shm`全exact pathをcleanupし、削除不能時は`backup_cleanup_failed`と残存artifactをoperatorへ引き継ぐ。promotion済みverified artifact setは成功commit時も後続DDL rollback時も保持し、restoreはtest-onlyの独立検証で行う。
 - P1-08のpayload boundaryが未承認またはPhase 0 semantic contract改訂待ちの場合は、semantic materializationと依存integrationを開始しない。
 
 ---
@@ -3449,7 +3655,7 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 # 12. コミット境界の概要
 
 各WP sectionの`コミット境界`が、Test FirstのRED→最小GREENのfocused command、full-green条件、明示的な`git add -- <path...>`を定義する唯一の着地表である。下記の順序はcommit message順の要約であり、`tests/test_repository_contracts.py`をModifyするWPはmanifest serialization laneの順序を守る。P1-00とP1-00bは完了済みであり、後続のmanifest laneと並列開始できるのはP1-10aである。P1-10bとP1-13は依存成立後、非共有pathのtest-only作業とのみ並列可能であり、共有manifest pathを同時にstageしない。
-Persistence migrationの対応は、P1-01a=`0001_event_store.sql`（`schema_migrations`/`events`のみ、schema-set最大version `1`）、P1-01b=`0002_projection_snapshots.sql`（最大version `2`）、P1-02=`0003_observation_stores.sql`（最大version `3`）、P1-03=`0004_turn_requests.sql`（最大version `4`）とする。各WPのfocused RED/GREEN command、schema-setの連番・未知versionなし・raw SQL bytes checksum evidence、SQLを含む明示的な`git add -- <path...>`は各WP sectionに定義し、全migrationをadditive、down migrationなし、P1-01aは後続tableなしとする。P1-01a、P1-01b、P1-02、P1-03、P1-04、P1-05、P1-06、P1-07、P1-08、P1-09、P1-11、P1-12のRED/GREEN focused commandは、各WPの既存focused testと`tests/test_repository_contracts.py`を同じpytest invocationへ含める。P1-00とP1-00bのfocused commandは既存の両test対象を維持し、P1-10a、P1-10b、P1-13はmanifest lane外のguard Gateとして別commandを使う。
+Persistence migrationの対応は、P1-01a=`0001_event_store.sql`（`schema_migrations`/`events`のみ、schema-set最大version `1`）、P1-01b=`0002_projection_snapshots.sql`（最大version `2`）、P1-02=`0003_observation_stores.sql`（最大version `3`）、P1-03=`0004_turn_requests.sql`（最大version `4`）とする。各WPのfocused RED/GREEN command、schema-setの連番・未知versionなし・raw SQL bytes checksum evidence、SQLを含む明示的な`git add -- <path...>`は各WP sectionに定義し、全migrationをadditive、down migrationなし、P1-01aは後続tableなしとする。P1-01aのmigrationだけは`SqliteDatabase.migrate()`を唯一のpublic mutation entryとし、private `_run_migrations`が`BEGIN IMMEDIATE`後のdedicated read source、bounded copy/verification、同一basename artifact set、DDL、schema row insert、COMMITを固定順で担う。P1-01a、P1-01b、P1-02、P1-03、P1-04、P1-05、P1-06、P1-07、P1-08、P1-09、P1-11、P1-12のRED/GREEN focused commandは、各WPの既存focused testと`tests/test_repository_contracts.py`を同じpytest invocationへ含める。P1-00とP1-00bのfocused commandは既存の両test対象を維持し、P1-10a、P1-10b、P1-13はmanifest lane外のguard Gateとして別commandを使う。
 
 完了済みの依存成果物:
 
@@ -3486,8 +3692,9 @@ Phase 1をPASSと記録できるのは、次の全条件を満たした場合だ
 - P1-00bのrepository guard testがexit `0`となり、exact production manifest、forbidden/generated path、Python gate order、Windows runner assertion、persistence限定SQLite scope、repository tree外DB条件が確認される
 - P1-01aの`0001_event_store.sql`が`schema_migrations`と`events`だけを作り、schema-set最大version `1`、欠落なし、unknown applied versionなし、raw SQL bytes SHA-256とversion/name/checksumの一致が確認される。P1-01aのproduction manifest entryは4つの`.py`だけで、SQLはmanifest entry外である。`PRAGMA table_info`、`PRAGMA index_list`、`PRAGMA index_xinfo`、`sqlite_master.sql`、`typeof(event_json) = 'blob'`、NOT NULL/CHECK/UNIQUE sabotageでexact schemaを再検証する
 - P1-01b、P1-02、P1-03がそれぞれ`0002_projection_snapshots.sql`、`0003_observation_stores.sql`、`0004_turn_requests.sql`だけを追加し、schema-set最大versionが順に`2`、`3`、`4`で、各段階に欠落・未知version・checksum driftがないことが確認される
-- migration runnerが`BEGIN IMMEDIATE`からvalidation、必要時だけのrepository tree外SQLite backup API copy、DDL、schema row insert、`COMMIT`を固定順で実行し、backup失敗時にDDLを行わず、no-op時にbackup/writeを行わないことが確認される
-- `SqliteDatabase`のpublic generic read/write、retry、workerがなく、typed Store read、fixed PRAGMA、shared write lock、別connection read、`query_only=ON`の多層防御が確認される。WAL `-wal`/`-shm` sidecarと`.db` variantsはrepository guardが拒否する
+- migration runnerが`SqliteDatabase.migrate()`を唯一のpublic mutation entryとして、private `_run_migrations`のexact signatureで、`BEGIN IMMEDIATE`からvalidation、必要時だけのdedicated read sourceによるrepository tree外SQLite backup API copy、close/reopen verifier、実schema/data比較、同一basename artifact setのpromotionまたは全exact path cleanup、DDL、schema row insert、`COMMIT`を固定順で実行し、backup/verification失敗時にDDLを行わず、no-op時にbackup/writeを行わないことが確認される。migration connection自身をbackup sourceにせず、public `run_migrations`、public backup/restore/cleanup/diagnosticを持たない
+- `SqliteDatabase`のpublic generic read/write、retry、workerがなく、typed Storeの`_read`がlock外、fixed connect kwargs/PRAGMA、migration main/source/copy直後destination/close-reopen後reopen verifierのjournal mode実readback値一致、shared write lock、別connection read、`query_only=ON`の多層防御が確認される。WAL `-wal`/`-shm`、同一basename partial/verified artifact set、`.db` variantsはrepository guardとartifact cleanup契約で管理する
+- filesystem-backed regular file、canonical path・migration `main.file`・source `main.file`の三者`samefile`、relative path/hard-link alias受理、URI/in-memory/directory/special file/別file拒否、`SQLITE_OK`継続を含む10秒copy deadline、BUSY/LOCKED 200回上限、actual schema/data mismatchとverification deadline超過のDDL前`backup_failed`、cleanup不能の`backup_cleanup_failed`、test-only bounded restoreが確認される。test-local timelineはprivate helperの実関数委譲spyとmigration connectionの`set_trace_callback`だけで記録され、production global recorder/diagnostic surfaceを追加しない
 - `read_campaign`の全sequence・全row・derived/readback検証、inspection-only filter、対象外破損rowのfail-closed、`read_turn`のrevert target、validated `PlayerInputAccepted.payload.turn_request_id` lookupが確認される
 - 既存`DomainEventValidationError`と`DomainEventValidationIssue`/`IssueCode`がparser・sequence・projection validationの既存codeのまま伝播し、Event Storeのduplicate event IDが`EventStoreConstraintError(code="duplicate_event_id")`、その他の`sqlite3.IntegrityError`が`EventStoreConstraintError(code="event_constraint_violation")`、その他のDatabase/Migration failureが安全なcodeへ写像される。元exceptionのmessage/args/cause/context/custom attr/logを保持せず、`DomainEventValidationError`をwrapしないことが確認される
 - P1-01bのEvent read→pure rebuild→monotonic upsert、stale read処理、barrierが確認される。P1-02の`tool_call`、allowlist、raw provider情報非保存、Event transaction外append、failed Turn Event 0件、table-local sequenceが確認される
