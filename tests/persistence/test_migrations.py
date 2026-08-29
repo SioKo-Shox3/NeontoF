@@ -101,8 +101,12 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     assert _schema_migration_rows(_database_path(tmp_path)) == first_rows
 
 
-def test_migration_0001_creates_only_schema_migrations_and_events(tmp_path: Path) -> None:
-    path = _migrate(tmp_path)
+def test_migration_0001_creates_only_schema_migrations_and_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _migration_dir(monkeypatch, tmp_path, _base_migration_files())
+    _database(tmp_path).migrate()
+    path = _database_path(tmp_path)
     connection = _connection(path)
     try:
         tables = connection.execute(
@@ -112,6 +116,116 @@ def test_migration_0001_creates_only_schema_migrations_and_events(tmp_path: Path
         connection.close()
 
     assert [row[0] for row in tables] == ["events", "schema_migrations"]
+
+
+def test_migration_0002_creates_only_projection_snapshots(tmp_path: Path) -> None:
+    from neontof.persistence import migrations
+    from neontof.persistence.sqlite_database import SqliteDatabase
+
+    migration_path = migrations.MIGRATIONS_DIRECTORY / "0002_projection_snapshots.sql"
+    assert migration_path.is_file()
+    path = _database_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    SqliteDatabase(path).migrate()
+
+    connection = _connection(path)
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        rows = connection.execute(
+            "SELECT version, name, checksum_sha256 FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert tables == {"schema_migrations", "events", "projection_snapshots"}
+    assert [row[0] for row in rows] == [1, 2]
+
+
+def test_projection_snapshots_schema_has_primary_key_sequence_check_and_blob(
+    tmp_path: Path,
+) -> None:
+    from neontof.persistence import migrations
+    from neontof.persistence.sqlite_database import SqliteDatabase
+
+    migration_path = migrations.MIGRATIONS_DIRECTORY / "0002_projection_snapshots.sql"
+    assert migration_path.is_file()
+    path = _database_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    SqliteDatabase(path).migrate()
+
+    connection = _connection(path)
+    try:
+        columns = connection.execute("PRAGMA table_info(projection_snapshots)").fetchall()
+        sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'projection_snapshots'"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO projection_snapshots "
+            "(campaign_id, through_sequence, projection_json) VALUES (?, ?, ?)",
+            ("campaign:alpha", 0, sqlite3.Binary(b"{}")),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO projection_snapshots "
+                "(campaign_id, through_sequence, projection_json) VALUES (?, ?, ?)",
+                ("campaign:alpha", 0, sqlite3.Binary(b"{}")),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO projection_snapshots "
+                "(campaign_id, through_sequence, projection_json) VALUES (?, ?, ?)",
+                ("campaign:negative", -1, sqlite3.Binary(b"{}")),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO projection_snapshots "
+                "(campaign_id, through_sequence, projection_json) VALUES (?, ?, ?)",
+                ("campaign:text", 0, "{}"),
+            )
+    finally:
+        connection.close()
+
+    assert [(row[1], row[2], row[3], row[5]) for row in columns] == [
+        ("campaign_id", "TEXT", 0, 1),
+        ("through_sequence", "INTEGER", 1, 0),
+        ("projection_json", "BLOB", 1, 0),
+    ]
+    normalized_sql = " ".join(sql.split()).upper()
+    assert "PRIMARY KEY" in normalized_sql
+    assert "CHECK (THROUGH_SEQUENCE >= 0)" in normalized_sql
+    assert "CHECK (TYPEOF(PROJECTION_JSON) = 'BLOB')" in normalized_sql
+
+
+def test_schema_set_maximum_is_two_without_gap_or_unknown_version(tmp_path: Path) -> None:
+    from neontof.persistence import migrations
+    from neontof.persistence.sqlite_database import SqliteDatabase
+
+    path = _database_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    SqliteDatabase(path).migrate()
+    connection = _connection(path)
+    try:
+        rows = connection.execute(
+            "SELECT version, name, checksum_sha256 FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert [row[0] for row in rows] == [1, 2]
+    assert max(row[0] for row in rows) == 2
+    assert [row[0] for row in rows] == list(range(1, 3))
+    assert rows[1] == (
+        2,
+        "0002_projection_snapshots.sql",
+        hashlib.sha256(
+            (migrations.MIGRATIONS_DIRECTORY / "0002_projection_snapshots.sql").read_bytes()
+        ).hexdigest(),
+    )
 
 
 def test_schema_migrations_shape_and_checksum_constraint(tmp_path: Path) -> None:
@@ -189,9 +303,11 @@ def test_events_schema_exposes_exact_columns_and_constraints(tmp_path: Path) -> 
 
 
 def test_schema_introspection_checks_table_info_index_list_index_xinfo_and_sqlite_master_sql(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = _migrate(tmp_path)
+    _migration_dir(monkeypatch, tmp_path, _base_migration_files())
+    _database(tmp_path).migrate()
+    path = _database_path(tmp_path)
     connection = _connection(path)
     try:
         table_info = connection.execute("PRAGMA table_info(events)").fetchall()
@@ -291,8 +407,12 @@ def test_event_json_storage_type_is_blob(tmp_path: Path) -> None:
     assert storage_type == "blob"
 
 
-def test_schema_set_maximum_is_one_without_gap_or_unknown_version(tmp_path: Path) -> None:
-    path = _migrate(tmp_path)
+def test_schema_set_maximum_is_one_without_gap_or_unknown_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _migration_dir(monkeypatch, tmp_path, _base_migration_files())
+    _database(tmp_path).migrate()
+    path = _database_path(tmp_path)
     connection = _connection(path)
     try:
         versions = [row[0] for row in connection.execute("SELECT version FROM schema_migrations")]

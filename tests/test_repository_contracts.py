@@ -364,6 +364,7 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "persistence/sqlite_database.py",
             "persistence/migrations.py",
             "persistence/event_store.py",
+            "persistence/projection_store.py",
             "model/__init__.py",
             "model/model_invoker.py",
             "model/fake_provider.py",
