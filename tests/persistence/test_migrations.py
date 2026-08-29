@@ -17,6 +17,22 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_SQL_PATH = (
     REPOSITORY_ROOT / "src" / "neontof" / "persistence" / "migrations" / "0001_event_store.sql"
 )
+PROJECTION_MIGRATION_SQL_PATH = (
+    REPOSITORY_ROOT
+    / "src"
+    / "neontof"
+    / "persistence"
+    / "migrations"
+    / "0002_projection_snapshots.sql"
+)
+OBSERVATION_MIGRATION_SQL_PATH = (
+    REPOSITORY_ROOT
+    / "src"
+    / "neontof"
+    / "persistence"
+    / "migrations"
+    / "0003_observation_stores.sql"
+)
 
 
 def _database_path(tmp_path: Path) -> Path:
@@ -118,12 +134,16 @@ def test_migration_0001_creates_only_schema_migrations_and_events(
     assert [row[0] for row in tables] == ["events", "schema_migrations"]
 
 
-def test_migration_0002_creates_only_projection_snapshots(tmp_path: Path) -> None:
-    from neontof.persistence import migrations
+def test_migration_0002_creates_only_projection_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from neontof.persistence.sqlite_database import SqliteDatabase
 
-    migration_path = migrations.MIGRATIONS_DIRECTORY / "0002_projection_snapshots.sql"
-    assert migration_path.is_file()
+    files = {
+        "0001_event_store.sql": MIGRATION_SQL_PATH.read_bytes(),
+        "0002_projection_snapshots.sql": PROJECTION_MIGRATION_SQL_PATH.read_bytes(),
+    }
+    _migration_dir(monkeypatch, tmp_path, files)
     path = _database_path(tmp_path)
     path.parent.mkdir(parents=True)
     SqliteDatabase(path).migrate()
@@ -201,10 +221,16 @@ def test_projection_snapshots_schema_has_primary_key_sequence_check_and_blob(
     assert "CHECK (TYPEOF(PROJECTION_JSON) = 'BLOB')" in normalized_sql
 
 
-def test_schema_set_maximum_is_two_without_gap_or_unknown_version(tmp_path: Path) -> None:
-    from neontof.persistence import migrations
+def test_schema_set_maximum_is_two_without_gap_or_unknown_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from neontof.persistence.sqlite_database import SqliteDatabase
 
+    files = {
+        "0001_event_store.sql": MIGRATION_SQL_PATH.read_bytes(),
+        "0002_projection_snapshots.sql": PROJECTION_MIGRATION_SQL_PATH.read_bytes(),
+    }
+    _migration_dir(monkeypatch, tmp_path, files)
     path = _database_path(tmp_path)
     path.parent.mkdir(parents=True)
     SqliteDatabase(path).migrate()
@@ -222,10 +248,242 @@ def test_schema_set_maximum_is_two_without_gap_or_unknown_version(tmp_path: Path
     assert rows[1] == (
         2,
         "0002_projection_snapshots.sql",
-        hashlib.sha256(
-            (migrations.MIGRATIONS_DIRECTORY / "0002_projection_snapshots.sql").read_bytes()
-        ).hexdigest(),
+        hashlib.sha256(files["0002_projection_snapshots.sql"]).hexdigest(),
     )
+
+
+def test_schema_set_maximum_is_three_without_gap_or_unknown_version(tmp_path: Path) -> None:
+    from neontof.persistence import migrations
+    from neontof.persistence.sqlite_database import SqliteDatabase
+
+    assert OBSERVATION_MIGRATION_SQL_PATH.is_file()
+    path = _database_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    SqliteDatabase(path).migrate()
+    connection = _connection(path)
+    try:
+        rows = connection.execute(
+            "SELECT version, name, checksum_sha256 FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert [row[0] for row in rows] == [1, 2, 3]
+    assert max(row[0] for row in rows) == 3
+    assert [row[0] for row in rows] == list(range(1, 4))
+    assert [path.name for path in sorted(migrations.MIGRATIONS_DIRECTORY.glob("*.sql"))] == [
+        "0001_event_store.sql",
+        "0002_projection_snapshots.sql",
+        "0003_observation_stores.sql",
+    ]
+    assert rows[0][2] == "fc481d44e36c6cbab1187c6e25b39260bf1759268e887cab998f807144300d4c"
+    assert rows[1][2] == "3190a22670b91ed64aeeb2e502edc85a7959bc98643fcceca6a3f567d3ca4c63"
+    assert rows[2] == (
+        3,
+        "0003_observation_stores.sql",
+        hashlib.sha256(OBSERVATION_MIGRATION_SQL_PATH.read_bytes()).hexdigest(),
+    )
+
+
+def test_migration_0003_creates_only_observation_stores(tmp_path: Path) -> None:
+    from neontof.persistence.sqlite_database import SqliteDatabase
+
+    assert OBSERVATION_MIGRATION_SQL_PATH.is_file()
+    path = _database_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    SqliteDatabase(path).migrate()
+    connection = _connection(path)
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        migration_rows = connection.execute(
+            "SELECT version, name, checksum_sha256 FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert tables == {
+        "schema_migrations",
+        "events",
+        "projection_snapshots",
+        "transcript_entries",
+        "telemetry_entries",
+    }
+    assert [row[0] for row in migration_rows] == [1, 2, 3]
+
+
+def test_observation_schema_has_exact_columns_constraints_and_no_foreign_keys(
+    tmp_path: Path,
+) -> None:
+    path = _migrate(tmp_path)
+    connection = _connection(path)
+    try:
+        if (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transcript_entries'"
+            ).fetchone()
+            is None
+        ):
+            pytest.fail("0003 observation tables are not available")
+        transcript_columns = connection.execute("PRAGMA table_info(transcript_entries)").fetchall()
+        telemetry_columns = connection.execute("PRAGMA table_info(telemetry_entries)").fetchall()
+        transcript_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transcript_entries'"
+        ).fetchone()[0]
+        telemetry_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_entries'"
+        ).fetchone()[0]
+        transcript_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(transcript_entries)"
+        ).fetchall()
+        telemetry_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(telemetry_entries)"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert [(row[1], row[2], row[3], row[5]) for row in transcript_columns] == [
+        ("campaign_id", "TEXT", 1, 1),
+        ("append_sequence", "INTEGER", 1, 2),
+        ("entry_id", "TEXT", 1, 0),
+        ("session_id", "TEXT", 0, 0),
+        ("turn_id", "TEXT", 0, 0),
+        ("model_call_id", "TEXT", 0, 0),
+        ("kind", "TEXT", 1, 0),
+        ("occurred_at", "TEXT", 1, 0),
+        ("data_json", "BLOB", 1, 0),
+    ]
+    assert [(row[1], row[2], row[3], row[5]) for row in telemetry_columns] == [
+        ("campaign_id", "TEXT", 1, 1),
+        ("append_sequence", "INTEGER", 1, 2),
+        ("entry_id", "TEXT", 1, 0),
+        ("session_id", "TEXT", 1, 0),
+        ("turn_id", "TEXT", 1, 0),
+        ("model_call_id", "TEXT", 1, 0),
+        ("provider", "TEXT", 1, 0),
+        ("model", "TEXT", 1, 0),
+        ("roles_json", "BLOB", 1, 0),
+        ("attempt", "INTEGER", 1, 0),
+        ("status", "TEXT", 1, 0),
+        ("input_tokens", "INTEGER", 1, 0),
+        ("output_tokens", "INTEGER", 1, 0),
+        ("cached_tokens", "INTEGER", 1, 0),
+        ("latency_ms", "INTEGER", 1, 0),
+        ("cost_microusd", "INTEGER", 1, 0),
+        ("error_code", "TEXT", 0, 0),
+        ("occurred_at", "TEXT", 1, 0),
+    ]
+    assert "PRIMARY KEY (campaign_id, append_sequence)" in transcript_sql
+    assert "PRIMARY KEY (campaign_id, append_sequence)" in telemetry_sql
+    assert "UNIQUE (entry_id)" in transcript_sql
+    assert "UNIQUE (entry_id)" in telemetry_sql
+    assert "CHECK (typeof(data_json) = 'blob')" in transcript_sql
+    assert "CHECK (typeof(roles_json) = 'blob')" in telemetry_sql
+    assert transcript_foreign_keys == []
+    assert telemetry_foreign_keys == []
+    assert "FOREIGN KEY" not in transcript_sql.upper()
+    assert "FOREIGN KEY" not in telemetry_sql.upper()
+
+
+def test_observation_schema_rejects_invalid_values_and_duplicate_entry_ids(
+    tmp_path: Path,
+) -> None:
+    path = _migrate(tmp_path)
+    connection = _connection(path)
+    transcript = (
+        "campaign:alpha",
+        1,
+        "transcript:valid",
+        "session:main",
+        "turn:first",
+        "model-call:first",
+        "player_input",
+        "2026-08-25T00:00:00Z",
+        sqlite3.Binary(b'{"text":"hello"}'),
+    )
+    telemetry = (
+        "campaign:alpha",
+        1,
+        "telemetry:valid",
+        "session:main",
+        "turn:first",
+        "model-call:first",
+        "fake_provider",
+        "test.model",
+        sqlite3.Binary(b'["referee"]'),
+        1,
+        "succeeded",
+        0,
+        0,
+        0,
+        0,
+        0,
+        None,
+        "2026-08-25T00:00:00Z",
+    )
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+                "('transcript_entries', 'telemetry_entries')"
+            )
+        }
+        if tables != {"transcript_entries", "telemetry_entries"}:
+            pytest.fail("0003 observation tables are not available")
+        connection.execute(
+            "INSERT INTO transcript_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", transcript
+        )
+        connection.execute(
+            "INSERT INTO telemetry_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            telemetry,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO transcript_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*transcript[:1], 0, *transcript[2:]),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO transcript_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*transcript[:2], "transcript:valid", *transcript[3:]),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO transcript_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*transcript[:6], "unexpected", *transcript[7:]),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO transcript_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*transcript[:8], "not-a-blob"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO telemetry_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*telemetry[:1], 0, *telemetry[2:]),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO telemetry_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*telemetry[:10], "not-a-status", *telemetry[11:]),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO telemetry_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*telemetry[:11], -1, *telemetry[12:]),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO telemetry_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*telemetry[:8], "not-a-blob", *telemetry[9:]),
+            )
+    finally:
+        connection.close()
 
 
 def test_schema_migrations_shape_and_checksum_constraint(tmp_path: Path) -> None:

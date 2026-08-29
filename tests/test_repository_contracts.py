@@ -26,7 +26,12 @@ PHASE_1_ALLOWED_EXACT_PATHS = frozenset(
         "client/package-lock.json",
         "client/package.json",
         "client/tsconfig.json",
+        "src/neontof/observability",
+        "src/neontof/observability/__init__.py",
+        "src/neontof/observability/records.py",
+        "src/neontof/observability/sanitization.py",
         "src/neontof/persistence",
+        "src/neontof/persistence/observation_store.py",
         "src/neontof/persistence/migrations",
     }
 )
@@ -233,6 +238,7 @@ def _repository_guard_violations(repository_root: Path) -> list[Path]:
             in {
                 ("src", "neontof", "persistence"),
                 ("src", "neontof", "persistence_like"),
+                ("src", "neontof", "observability"),
             }
         )
         if is_phase_1_scoped_path and not _is_phase_1_allowed_path(relative_path):
@@ -370,6 +376,10 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "model/fake_provider.py",
             "model/scripted_provider.py",
             "model/recorded_fixture.py",
+            "observability/__init__.py",
+            "observability/records.py",
+            "observability/sanitization.py",
+            "persistence/observation_store.py",
         ]
     )
 
@@ -493,6 +503,9 @@ def test_phase_1_client_and_migrations_paths_are_allowed() -> None:
     assert _is_phase_1_allowed_path(Path("src/neontof/persistence"))
     assert _is_phase_1_allowed_path(Path("src/neontof/persistence/event_store.py"))
     assert _is_phase_1_allowed_path(Path("src/neontof/persistence/migrations/0001.sql"))
+    assert _is_phase_1_allowed_path(Path("src/neontof/observability"))
+    assert _is_phase_1_allowed_path(Path("src/neontof/observability/records.py"))
+    assert _is_phase_1_allowed_path(Path("src/neontof/observability/sanitization.py"))
     assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.sqlite"))
     assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.sqlite3"))
     assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.db"))
@@ -506,6 +519,8 @@ def test_phase_1_client_and_migrations_paths_are_allowed() -> None:
     assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/migrations/package.json"))
     assert not _is_phase_1_allowed_path(Path("unrelated/client/marker.txt"))
     assert not _is_phase_1_allowed_path(Path("src/neontof/persistence_like/module.py"))
+    assert not _is_phase_1_allowed_path(Path("src/neontof/observability_like/module.py"))
+    assert not _is_phase_1_allowed_path(Path("src/neontof/observability/cache.sqlite"))
     assert not _is_phase_1_allowed_path(Path("application/persistence.py"))
 
 
@@ -522,6 +537,7 @@ def test_repository_guard_enforces_phase_1_path_policy(tmp_path: Path) -> None:
         synthetic_root / "src" / "neontof" / "persistence" / "package.json",
         synthetic_root / "src" / "neontof" / "persistence" / "openai_client.py",
         synthetic_root / "src" / "neontof" / "persistence" / "provider_registry.py",
+        synthetic_root / "src" / "neontof" / "observability" / "extra.py",
         synthetic_root / "client" / ".node-version",
         synthetic_root / "client" / "Dockerfile",
         synthetic_root / "client" / "nested" / "eslint.config.mjs",
@@ -544,6 +560,7 @@ def test_repository_guard_enforces_phase_1_path_policy(tmp_path: Path) -> None:
         synthetic_root / "client" / "src" / "main.ts",
         synthetic_root / "src" / "neontof" / "persistence" / "event_store.py",
         synthetic_root / "src" / "neontof" / "persistence" / "migrations" / "0001.sql",
+        synthetic_root / "src" / "neontof" / "observability" / "records.py",
     )
     for path in allowed_paths:
         path.parent.mkdir(parents=True, exist_ok=True)
