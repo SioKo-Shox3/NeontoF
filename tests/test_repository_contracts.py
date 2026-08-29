@@ -42,6 +42,34 @@ FORBIDDEN_REPOSITORY_FILENAMES = frozenset(
         "vitest.config.ts",
     }
 )
+FORBIDDEN_DATABASE_SUFFIXES = frozenset(
+    {
+        ".sqlite",
+        ".sqlite3",
+        ".db",
+        ".sqlite-wal",
+        ".sqlite-shm",
+        ".sqlite3-wal",
+        ".sqlite3-shm",
+        ".db-wal",
+        ".db-shm",
+    }
+)
+FORBIDDEN_DATABASE_GLOB_PATTERNS = (
+    "*.db-*",
+    "*.sqlite-*",
+    "*.sqlite3-*",
+    "*.sqlite-journal",
+    "*.sqlite3-journal",
+    "*.db-journal",
+    "*.migration-*.partial.sqlite3",
+    "*.migration-*.partial.sqlite3-wal",
+    "*.migration-*.partial.sqlite3-shm",
+    "*.migration-*.verified.sqlite3",
+    "*.migration-*.verified.sqlite3-wal",
+    "*.migration-*.verified.sqlite3-shm",
+)
+FORBIDDEN_DATABASE_DIRECTORY_NAMES = frozenset({".neontof-migration-backups"})
 CI_GATE_COMMANDS = (
     'py -3.14 -c "import sys; assert sys.version_info[:3] == (3, 14, 3); print(sys.version)"',
     "py -3.14 -m venv .venv",
@@ -84,7 +112,7 @@ def _is_phase_1_allowed_path(relative_path: Path) -> bool:
 
     if relative_path.name in FORBIDDEN_REPOSITORY_FILENAMES:
         return False
-    if relative_path.suffix.lower() in {".sqlite", ".db"}:
+    if _is_forbidden_database_artifact(relative_path):
         return False
 
     relative_parts = relative_path.parts
@@ -96,6 +124,15 @@ def _is_phase_1_allowed_path(relative_path: Path) -> bool:
     migrations_root = Path("src/neontof/persistence/migrations")
     persistence_root = Path("src/neontof/persistence")
     return migrations_root in relative_path.parents or persistence_root in relative_path.parents
+
+
+def _is_forbidden_database_artifact(relative_path: Path) -> bool:
+    name = relative_path.name.lower()
+    if name in FORBIDDEN_DATABASE_DIRECTORY_NAMES:
+        return True
+    if name.endswith(tuple(FORBIDDEN_DATABASE_SUFFIXES)):
+        return True
+    return any(Path(name).match(pattern) for pattern in FORBIDDEN_DATABASE_GLOB_PATTERNS)
 
 
 def _ci_guard_violations(ci_text: str) -> list[str]:
@@ -201,7 +238,7 @@ def _repository_guard_violations(repository_root: Path) -> list[Path]:
         if is_phase_1_scoped_path and not _is_phase_1_allowed_path(relative_path):
             violations.append(path)
             continue
-        if path.is_file() and path.suffix.lower() in {".sqlite", ".db"}:
+        if _is_forbidden_database_artifact(relative_path):
             violations.append(path)
             continue
         if relative_path.as_posix() in PHASE_1_ALLOWED_EXACT_PATHS:
@@ -323,6 +360,10 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "contracts/character_sheet.py",
             "contracts/scenario.py",
             "event_metadata.py",
+            "persistence/__init__.py",
+            "persistence/sqlite_database.py",
+            "persistence/migrations.py",
+            "persistence/event_store.py",
             "model/__init__.py",
             "model/model_invoker.py",
             "model/fake_provider.py",
@@ -391,7 +432,9 @@ def test_forbidden_dockerfile_sdk_registry_and_generated_paths_remain_forbidden(
     forbidden_registry_name = "provider" + "_registry.py"
     assert not list(PRODUCTION_ROOT.rglob(f"{forbidden_sdk_name}*.py"))
     assert not list(PRODUCTION_ROOT.rglob(forbidden_registry_name))
-    assert not [path for path in all_files if path.name.endswith((".sqlite", ".db"))]
+    assert not [
+        path for path in all_files if path.name.lower().endswith(tuple(FORBIDDEN_DATABASE_SUFFIXES))
+    ]
 
     source_text = "\n".join(
         path.read_text(encoding="utf-8") for path in PRODUCTION_ROOT.rglob("*.py")
@@ -450,7 +493,12 @@ def test_phase_1_client_and_migrations_paths_are_allowed() -> None:
     assert _is_phase_1_allowed_path(Path("src/neontof/persistence/event_store.py"))
     assert _is_phase_1_allowed_path(Path("src/neontof/persistence/migrations/0001.sql"))
     assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.sqlite"))
+    assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.sqlite3"))
     assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.db"))
+    assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.db-wal"))
+    assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.db-shm"))
+    assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.sqlite-wal"))
+    assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/cache.sqlite-shm"))
     assert not _is_phase_1_allowed_path(Path("src/neontof/persistence/Dockerfile"))
     assert not _is_phase_1_allowed_path(Path("migrations/0001.sql"))
     assert not _is_phase_1_allowed_path(Path("src/neontof/application/migrations/0001.sql"))
@@ -678,3 +726,89 @@ def test_repository_contracts_define_projection_models_only_in_projection_module
             continue
         assert class_definition_count(path, "FactRecord") == 0, path
         assert class_definition_count(path, "Projection") == 0, path
+
+
+def test_repository_guard_rejects_sqlite_wal_sidecars_and_db_variants(tmp_path: Path) -> None:
+    synthetic_root = tmp_path / "repository"
+    persistence_root = synthetic_root / "src" / "neontof" / "persistence"
+    persistence_root.mkdir(parents=True)
+    forbidden_paths = tuple(
+        persistence_root / filename
+        for filename in (
+            "state.sqlite",
+            "state.sqlite3",
+            "state.db",
+            "state.sqlite-wal",
+            "state.sqlite-shm",
+            "state.sqlite3-wal",
+            "state.sqlite3-shm",
+            "state.db-wal",
+            "state.db-shm",
+            "state.sqlite-2",
+            "state.sqlite3-2",
+            "state.sqlite3-journal",
+            "state.sqlite-wal-extra",
+            "state.sqlite3-shm-extra",
+        )
+    )
+    for path in forbidden_paths:
+        path.write_bytes(b"database artifact")
+
+    violations = _repository_guard_violations(synthetic_root)
+
+    assert set(forbidden_paths) <= set(violations)
+
+
+def test_repository_guard_rejects_journals_variants_and_migration_artifact_sets(
+    tmp_path: Path,
+) -> None:
+    synthetic_root = tmp_path / "repository"
+    persistence_root = synthetic_root / "src" / "neontof" / "persistence"
+    persistence_root.mkdir(parents=True)
+    forbidden_names = (
+        "state.db-journal",
+        "state.sqlite-journal",
+        "state.sqlite3-journal",
+        "state.db-2",
+        "state.migration-deadbeef.partial.sqlite3",
+        "state.migration-deadbeef.partial.sqlite3-wal",
+        "state.migration-deadbeef.partial.sqlite3-shm",
+        "state.migration-deadbeef.verified.sqlite3",
+        "state.migration-deadbeef.verified.sqlite3-wal",
+        "state.migration-deadbeef.verified.sqlite3-shm",
+    )
+    forbidden_paths = tuple(persistence_root / name for name in forbidden_names)
+    for path in forbidden_paths:
+        path.write_bytes(b"database artifact")
+    backup_root = persistence_root / ".neontof-migration-backups"
+    backup_root.mkdir()
+    (backup_root / "state.migration-deadbeef.partial.sqlite3").write_bytes(b"partial")
+
+    violations = _repository_guard_violations(synthetic_root)
+
+    assert set(forbidden_paths) <= set(violations)
+    assert backup_root in violations
+    for path in forbidden_paths:
+        assert not _is_phase_1_allowed_path(path.relative_to(synthetic_root))
+    assert not _is_phase_1_allowed_path(
+        Path("src/neontof/persistence/state.migration-deadbeef.partial.sqlite3")
+    )
+
+
+def test_repository_guard_does_not_treat_normal_persistence_files_as_database_artifacts(
+    tmp_path: Path,
+) -> None:
+    synthetic_root = tmp_path / "repository"
+    persistence_root = synthetic_root / "src" / "neontof" / "persistence"
+    persistence_root.mkdir(parents=True)
+    normal_paths = (
+        persistence_root / "README.txt",
+        persistence_root / "migration_notes.md",
+        persistence_root / "event_store.py",
+    )
+    for path in normal_paths:
+        path.write_text("marker\n", encoding="utf-8")
+
+    violations = _repository_guard_violations(synthetic_root)
+
+    assert not set(normal_paths) & set(violations)
