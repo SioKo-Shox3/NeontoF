@@ -35,8 +35,10 @@ PHASE_1_ALLOWED_EXACT_PATHS = frozenset(
         "src/neontof/observability/__init__.py",
         "src/neontof/observability/records.py",
         "src/neontof/observability/sanitization.py",
+        "src/neontof/application/turn_models.py",
         "src/neontof/persistence",
         "src/neontof/persistence/observation_store.py",
+        "src/neontof/persistence/turn_request_store.py",
         "src/neontof/persistence/migrations",
     }
 )
@@ -328,6 +330,36 @@ DATABASE_OPERATION_ALLOWLIST = frozenset(
             "neontof.persistence.projection_store.ProjectionStore.delete",
             "_write",
         ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.claim",
+            "_write",
+        ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.stage_recovery_metadata",
+            "_write",
+        ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.stage",
+            "_write",
+        ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.read",
+            "_read",
+        ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.read_processing",
+            "_read",
+        ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.complete",
+            "_write",
+        ),
     }
 )
 DATABASE_OPERATION_ALLOWLIST_COUNTS = {key: 1 for key in DATABASE_OPERATION_ALLOWLIST}
@@ -374,6 +406,14 @@ SAME_CONNECTION_READER_PATH = "src/neontof/persistence/projection_store.py"
 SAME_CONNECTION_READER_QUALIFIED_NAME = (
     "neontof.persistence.projection_store.ProjectionStore.rebuild.<locals>.operation"
 )
+TURN_REQUEST_READER_PATH = "src/neontof/persistence/turn_request_store.py"
+TURN_REQUEST_READER_QUALIFIED_NAME = (
+    "neontof.persistence.turn_request_store.TurnRequestStore.claim.<locals>.operation"
+)
+SAME_CONNECTION_READER_ALLOWLIST = {
+    (SAME_CONNECTION_READER_PATH, SAME_CONNECTION_READER_QUALIFIED_NAME),
+    (TURN_REQUEST_READER_PATH, TURN_REQUEST_READER_QUALIFIED_NAME),
+}
 GETATTR_ALLOWLIST = {
     (
         "src/neontof/persistence/event_store.py",
@@ -1421,6 +1461,61 @@ def _token_word(token: _SqlToken | None) -> str | None:
     return token[1]
 
 
+def _has_processing_partial_predicate(statement: list[_SqlToken]) -> bool:
+    for index in range(len(statement) - 3):
+        where = _token_word(statement[index])
+        status = _token_word(statement[index + 1])
+        if (
+            where is not None
+            and where.upper() == "WHERE"
+            and status is not None
+            and status.lower() == "status"
+            and statement[index + 2][1] == "="
+            and statement[index + 3][0] == "string"
+            and statement[index + 3][1].lower() == "processing"
+        ):
+            return True
+    return False
+
+
+def _has_request_key_exact_check(statement: list[_SqlToken]) -> bool:
+    expected = (
+        ("word", "request_key"),
+        ("word", "blob"),
+        ("word", "not"),
+        ("word", "null"),
+        ("word", "primary"),
+        ("word", "key"),
+        ("word", "check"),
+        ("symbol", "("),
+        ("word", "typeof"),
+        ("symbol", "("),
+        ("word", "request_key"),
+        ("symbol", ")"),
+        ("symbol", "="),
+        ("string", "blob"),
+        ("word", "and"),
+        ("word", "length"),
+        ("symbol", "("),
+        ("word", "request_key"),
+        ("symbol", ")"),
+        ("word", "between"),
+        ("word", "1"),
+        ("word", "and"),
+        ("word", "256"),
+        ("symbol", ")"),
+    )
+    width = len(expected)
+    for index in range(len(statement) - width + 1):
+        candidate = statement[index : index + width]
+        if all(
+            token[0] == kind and token[1].lower() == value and token[2] is (kind == "string")
+            for token, (kind, value) in zip(candidate, expected)
+        ):
+            return True
+    return False
+
+
 def _target_from_tokens(tokens: list[_SqlToken], index: int) -> tuple[str, bool, bool, int] | None:
     if index >= len(tokens) or tokens[index][0] not in {"word", "identifier"}:
         return None
@@ -1515,6 +1610,7 @@ def _sql_write_target(
         if target_index < len(tokens) and (_token_word(tokens[target_index]) or "").upper() in {
             "TEMP",
             "TEMPORARY",
+            "UNIQUE",
         }:
             target_index += 1
         if target_index >= len(tokens) or (_token_word(tokens[target_index]) or "").upper() not in {
@@ -2267,8 +2363,7 @@ def _known_callback_call(
         return (
             (
                 (
-                    record.relative_path == SAME_CONNECTION_READER_PATH
-                    and qualified_name == SAME_CONNECTION_READER_QUALIFIED_NAME
+                    (record.relative_path, qualified_name) in SAME_CONNECTION_READER_ALLOWLIST
                     and _receiver_terminal_name(call.func.value) == "_event_store"
                 )
                 or (
@@ -2834,6 +2929,26 @@ def _storage_dml_is_allowed(record: _SourceRecord, qualified_name: str, sql: str
             "neontof.persistence.migrations._run_migrations",
             "schema_migrations",
         ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.claim.<locals>.operation",
+            "turn_requests",
+        ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.stage_recovery_metadata.<locals>.operation",
+            "turn_requests",
+        ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.stage.<locals>.operation",
+            "turn_requests",
+        ),
+        (
+            "src/neontof/persistence/turn_request_store.py",
+            "neontof.persistence.turn_request_store.TurnRequestStore.complete.<locals>.operation",
+            "turn_requests",
+        ),
     }
     return (
         (
@@ -3219,6 +3334,13 @@ EXPECTED_MIGRATION_TABLES = {
     "0001_event_store.sql": ("schema_migrations", "events"),
     "0002_projection_snapshots.sql": ("projection_snapshots",),
     "0003_observation_stores.sql": ("transcript_entries", "telemetry_entries"),
+    "0004_turn_requests.sql": ("turn_requests",),
+}
+EXPECTED_MIGRATION_INDEXES = {
+    "0004_turn_requests.sql": (
+        "uq_turn_requests_campaign_processing",
+        "idx_turn_requests_campaign_turn_request_id",
+    ),
 }
 
 
@@ -3257,12 +3379,19 @@ def _migration_sql_violations(production_root: Path) -> list[Path]:
             continue
         statements = _split_sql_statements_strict(sql)
         expected_tables = EXPECTED_MIGRATION_TABLES.get(path.name)
-        if statements is None or expected_tables is None or len(statements) != len(expected_tables):
+        expected_indexes = EXPECTED_MIGRATION_INDEXES.get(path.name, ())
+        expected_statement_count = len(expected_tables or ()) + len(expected_indexes)
+        if (
+            statements is None
+            or expected_tables is None
+            or len(statements) != expected_statement_count
+        ):
             violations.add(path)
             continue
         actual_tables: list[str] = []
+        actual_indexes: list[str] = []
         statement_failed = False
-        for statement in statements:
+        for index, statement in enumerate(statements):
             parsed = _sql_write_target(statement)
             if parsed is None:
                 statement_failed = True
@@ -3276,11 +3405,42 @@ def _migration_sql_violations(production_root: Path) -> list[Path]:
                 word = _token_word(token)
                 if word is not None:
                     first_words.append(word.upper())
-            if len(first_words) < 2 or first_words[:2] != ["CREATE", "TABLE"]:
-                statement_failed = True
-                break
-            actual_tables.append(target)
-        if statement_failed or tuple(actual_tables) != expected_tables:
+            if index < len(expected_tables):
+                if len(first_words) < 2 or first_words[:2] != ["CREATE", "TABLE"]:
+                    statement_failed = True
+                    break
+                if (
+                    path.name == "0004_turn_requests.sql"
+                    and target == "turn_requests"
+                    and not _has_request_key_exact_check(statement)
+                ):
+                    statement_failed = True
+                    break
+                actual_tables.append(target)
+            else:
+                if (
+                    operation != "CREATE"
+                    or len(first_words) < 3
+                    or not (
+                        first_words[:2] == ["CREATE", "INDEX"]
+                        or first_words[:3] == ["CREATE", "UNIQUE", "INDEX"]
+                    )
+                ):
+                    statement_failed = True
+                    break
+                if (
+                    path.name == "0004_turn_requests.sql"
+                    and target == "uq_turn_requests_campaign_processing"
+                    and not _has_processing_partial_predicate(statement)
+                ):
+                    statement_failed = True
+                    break
+                actual_indexes.append(target)
+        if (
+            statement_failed
+            or tuple(actual_tables) != expected_tables
+            or tuple(actual_indexes) != expected_indexes
+        ):
             violations.add(path)
     return sorted(violations)
 
@@ -3492,7 +3652,10 @@ def _cross_module_violations(production_root: Path) -> list[Path]:
     violations = set(parse_failures)
     reader_count = 0
     for record in records:
-        if record.relative_path != SAME_CONNECTION_READER_PATH:
+        if record.relative_path not in {
+            SAME_CONNECTION_READER_PATH,
+            TURN_REQUEST_READER_PATH,
+        }:
             continue
         if record.visitor.cross_module_method_aliases:
             violations.add(record.path)
@@ -3506,7 +3669,7 @@ def _cross_module_violations(production_root: Path) -> list[Path]:
             if method == "_read_campaign_on_connection":
                 if (
                     not record.visitor.unsafe_event_store_rebind
-                    and qualified_name == SAME_CONNECTION_READER_QUALIFIED_NAME
+                    and (record.relative_path, qualified_name) in SAME_CONNECTION_READER_ALLOWLIST
                     and not call.keywords
                     and len(call.args) == 2
                     and isinstance(call.args[0], ast.Name)
@@ -3527,17 +3690,18 @@ def _cross_module_violations(production_root: Path) -> list[Path]:
                 )
             ):
                 violations.add(record.path)
-        projection_write_lines = [
-            call.lineno
-            for call, qualified_name, sql in _static_execute_records(record)
-            if _is_allowed_projection_snapshot_write(record, qualified_name, sql)
-        ]
-        if (
-            reader_lines
-            and projection_write_lines
-            and min(reader_lines) >= min(projection_write_lines)
-        ):
-            violations.add(record.path)
+        if record.relative_path == SAME_CONNECTION_READER_PATH:
+            projection_write_lines = [
+                call.lineno
+                for call, qualified_name, sql in _static_execute_records(record)
+                if _is_allowed_projection_snapshot_write(record, qualified_name, sql)
+            ]
+            if (
+                reader_lines
+                and projection_write_lines
+                and min(reader_lines) >= min(projection_write_lines)
+            ):
+                violations.add(record.path)
         if (
             "event_boundary_lock" in record.source
             and "_WRITE_LOCK" in record.source
@@ -3547,11 +3711,15 @@ def _cross_module_violations(production_root: Path) -> list[Path]:
             )
         ):
             violations.add(record.path)
-    if _is_actual_production_root(production_root) and reader_count != 1:
+    if _is_actual_production_root(production_root) and reader_count != 2:
         violations.add(PRODUCTION_ROOT / "persistence" / "projection_store.py")
-    elif not _is_actual_production_root(production_root) and reader_count > 1:
+        violations.add(PRODUCTION_ROOT / "persistence" / "turn_request_store.py")
+    elif not _is_actual_production_root(production_root) and reader_count > 2:
         for record in records:
-            if record.relative_path == SAME_CONNECTION_READER_PATH:
+            if record.relative_path in {
+                SAME_CONNECTION_READER_PATH,
+                TURN_REQUEST_READER_PATH,
+            }:
                 violations.add(record.path)
     return sorted(violations)
 
@@ -3698,6 +3866,7 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "main.py",
             "config.py",
             "app.py",
+            "application/turn_models.py",
             "contracts/__init__.py",
             "contracts/base.py",
             "contracts/ids.py",
@@ -3724,6 +3893,7 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "observability/records.py",
             "observability/sanitization.py",
             "persistence/observation_store.py",
+            "persistence/turn_request_store.py",
         ]
     )
 
@@ -4837,8 +5007,38 @@ def read_blob(connection: sqlite3.Connection) -> None:
         assert rejected_path in _sqlite_usage_violations(synthetic_root)
 
 
-def test_only_six_transaction_sql_sites_are_allowed() -> None:
+def test_only_six_transaction_sql_sites_are_allowed(tmp_path: Path) -> None:
     assert _sqlite_usage_violations(PRODUCTION_ROOT) == []
+
+    migration_path = (
+        tmp_path / "src" / "neontof" / "persistence" / "migrations" / "0004_turn_requests.sql"
+    )
+    migration_path.parent.mkdir(parents=True)
+    migration_sql = (
+        REPOSITORY_ROOT
+        / "src"
+        / "neontof"
+        / "persistence"
+        / "migrations"
+        / "0004_turn_requests.sql"
+    ).read_bytes()
+    migration_path.write_bytes(migration_sql)
+    assert _migration_sql_violations(tmp_path / "src" / "neontof") == []
+
+    migration_path.write_bytes(migration_sql.replace(b" WHERE status = 'processing'", b""))
+    assert migration_path in _migration_sql_violations(tmp_path / "src" / "neontof")
+
+    request_key_mutations = (
+        (b"length(request_key) BETWEEN 1 AND 256", b"length(request_key) BETWEEN 1 AND 257"),
+        (b"length(request_key) BETWEEN 1 AND 256", b"length(request_key) BETWEEN 1 AND 255"),
+        (b"AND length(request_key) BETWEEN 1 AND 256", b""),
+        (b"typeof(request_key) = 'blob'", b"typeof(request_key) = 'text'"),
+    )
+    for original, replacement in request_key_mutations:
+        mutated_sql = migration_sql.replace(original, replacement)
+        assert mutated_sql != migration_sql
+        migration_path.write_bytes(mutated_sql)
+        assert migration_path in _migration_sql_violations(tmp_path / "src" / "neontof")
 
 
 def test_sqlite_scan_rejects_transaction_sql_with_semicolon_comment_trailing_token_end_savepoint_and_release(
@@ -5147,7 +5347,7 @@ def unsafe(connection: sqlite3.Connection, database: OtherDatabase) -> None:
         assert rejected_path in _sqlite_usage_violations(synthetic_root)
 
 
-def test_projection_rebuild_has_one_same_connection_reader_before_claim() -> None:
+def test_projection_rebuild_and_claim_have_two_same_connection_readers() -> None:
     assert _sqlite_usage_violations(PRODUCTION_ROOT) == []
 
 

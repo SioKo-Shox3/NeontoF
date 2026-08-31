@@ -33,6 +33,9 @@ OBSERVATION_MIGRATION_SQL_PATH = (
     / "migrations"
     / "0003_observation_stores.sql"
 )
+TURN_REQUEST_MIGRATION_SQL_PATH = (
+    REPOSITORY_ROOT / "src" / "neontof" / "persistence" / "migrations" / "0004_turn_requests.sql"
+)
 
 
 def _database_path(tmp_path: Path) -> Path:
@@ -252,11 +255,12 @@ def test_schema_set_maximum_is_two_without_gap_or_unknown_version(
     )
 
 
-def test_schema_set_maximum_is_three_without_gap_or_unknown_version(tmp_path: Path) -> None:
+def test_schema_set_maximum_is_four_without_gap_or_unknown_version(tmp_path: Path) -> None:
     from neontof.persistence import migrations
     from neontof.persistence.sqlite_database import SqliteDatabase
 
     assert OBSERVATION_MIGRATION_SQL_PATH.is_file()
+    assert TURN_REQUEST_MIGRATION_SQL_PATH.is_file()
     path = _database_path(tmp_path)
     path.parent.mkdir(parents=True)
     SqliteDatabase(path).migrate()
@@ -268,13 +272,14 @@ def test_schema_set_maximum_is_three_without_gap_or_unknown_version(tmp_path: Pa
     finally:
         connection.close()
 
-    assert [row[0] for row in rows] == [1, 2, 3]
-    assert max(row[0] for row in rows) == 3
-    assert [row[0] for row in rows] == list(range(1, 4))
+    assert [row[0] for row in rows] == [1, 2, 3, 4]
+    assert max(row[0] for row in rows) == 4
+    assert [row[0] for row in rows] == list(range(1, 5))
     assert [path.name for path in sorted(migrations.MIGRATIONS_DIRECTORY.glob("*.sql"))] == [
         "0001_event_store.sql",
         "0002_projection_snapshots.sql",
         "0003_observation_stores.sql",
+        "0004_turn_requests.sql",
     ]
     assert rows[0][2] == "fc481d44e36c6cbab1187c6e25b39260bf1759268e887cab998f807144300d4c"
     assert rows[1][2] == "3190a22670b91ed64aeeb2e502edc85a7959bc98643fcceca6a3f567d3ca4c63"
@@ -283,12 +288,28 @@ def test_schema_set_maximum_is_three_without_gap_or_unknown_version(tmp_path: Pa
         "0003_observation_stores.sql",
         hashlib.sha256(OBSERVATION_MIGRATION_SQL_PATH.read_bytes()).hexdigest(),
     )
+    assert rows[3] == (
+        4,
+        "0004_turn_requests.sql",
+        hashlib.sha256(TURN_REQUEST_MIGRATION_SQL_PATH.read_bytes()).hexdigest(),
+    )
 
 
-def test_migration_0003_creates_only_observation_stores(tmp_path: Path) -> None:
+def test_migration_0003_creates_only_observation_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from neontof.persistence.sqlite_database import SqliteDatabase
 
     assert OBSERVATION_MIGRATION_SQL_PATH.is_file()
+    _migration_dir(
+        monkeypatch,
+        tmp_path,
+        {
+            "0001_event_store.sql": MIGRATION_SQL_PATH.read_bytes(),
+            "0002_projection_snapshots.sql": PROJECTION_MIGRATION_SQL_PATH.read_bytes(),
+            "0003_observation_stores.sql": OBSERVATION_MIGRATION_SQL_PATH.read_bytes(),
+        },
+    )
     path = _database_path(tmp_path)
     path.parent.mkdir(parents=True)
     SqliteDatabase(path).migrate()
@@ -314,6 +335,132 @@ def test_migration_0003_creates_only_observation_stores(tmp_path: Path) -> None:
         "telemetry_entries",
     }
     assert [row[0] for row in migration_rows] == [1, 2, 3]
+
+
+def test_migration_0004_creates_only_turn_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from neontof.persistence.sqlite_database import SqliteDatabase
+
+    assert TURN_REQUEST_MIGRATION_SQL_PATH.is_file()
+    _migration_dir(
+        monkeypatch,
+        tmp_path,
+        {
+            "0001_event_store.sql": MIGRATION_SQL_PATH.read_bytes(),
+            "0002_projection_snapshots.sql": PROJECTION_MIGRATION_SQL_PATH.read_bytes(),
+            "0003_observation_stores.sql": OBSERVATION_MIGRATION_SQL_PATH.read_bytes(),
+            "0004_turn_requests.sql": TURN_REQUEST_MIGRATION_SQL_PATH.read_bytes(),
+        },
+    )
+    path = _database_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    SqliteDatabase(path).migrate()
+    connection = _connection(path)
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        migration_rows = connection.execute(
+            "SELECT version, name, checksum_sha256 FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert tables == {
+        "schema_migrations",
+        "events",
+        "projection_snapshots",
+        "transcript_entries",
+        "telemetry_entries",
+        "turn_requests",
+    }
+    assert [row[0] for row in migration_rows] == [1, 2, 3, 4]
+    assert migration_rows[3][1] == "0004_turn_requests.sql"
+
+
+def test_turn_requests_schema_has_identity_response_and_status_constraints(
+    tmp_path: Path,
+) -> None:
+    path = _migrate(tmp_path)
+    connection = _connection(path)
+    try:
+        columns = connection.execute("PRAGMA table_info(turn_requests)").fetchall()
+        sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turn_requests'"
+        ).fetchone()[0]
+        indexes = connection.execute("PRAGMA index_list(turn_requests)").fetchall()
+        processing_index_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'uq_turn_requests_campaign_processing'"
+        ).fetchone()[0]
+        processing_index_columns = connection.execute(
+            "PRAGMA index_info(uq_turn_requests_campaign_processing)"
+        ).fetchall()
+        lookup_index_columns = connection.execute(
+            "PRAGMA index_info(idx_turn_requests_campaign_turn_request_id)"
+        ).fetchall()
+        foreign_keys = connection.execute("PRAGMA foreign_key_list(turn_requests)").fetchall()
+    finally:
+        connection.close()
+
+    assert [row[1] for row in columns] == [
+        "request_key",
+        "request_kind",
+        "requested_media_type",
+        "turn_request_id",
+        "campaign_id",
+        "session_id",
+        "scene_id",
+        "turn_id",
+        "root_turn_request_id",
+        "input_digest",
+        "base_event_sequence",
+        "status",
+        "recovery_reason",
+        "recovery_selector",
+        "accepted_event_id",
+        "resumed_event_id",
+        "awaiting_player_event_id",
+        "committed_event_id",
+        "aborted_event_id",
+        "recovery_aborted_event_id",
+        "occurred_at",
+        "initial_recovery_payload",
+        "staged_recovery_payload",
+        "recovery_payload_version",
+        "response_status_code",
+        "response_media_type",
+        "response_body",
+    ]
+    assert "PRIMARY KEY" in sql.upper()
+    assert "REQUEST_KEY" in sql.upper()
+    normalized_sql = " ".join(sql.split()).upper()
+    assert (
+        "REQUEST_KEY BLOB NOT NULL PRIMARY KEY CHECK ( TYPEOF(REQUEST_KEY) = 'BLOB' "
+        "AND LENGTH(REQUEST_KEY) BETWEEN 1 AND 256 )"
+    ) in normalized_sql
+    assert "RECOVERY_PAYLOAD_VERSION" in sql.upper()
+    assert "RESPONSE_MEDIA_TYPE = REQUESTED_MEDIA_TYPE" in sql.upper()
+    assert "STATUS = 'PROCESSING'" in sql.upper()
+    assert "FOREIGN KEY" not in sql.upper()
+    assert foreign_keys == []
+    processing_index = next(
+        row for row in indexes if row[1] == "uq_turn_requests_campaign_processing"
+    )
+    lookup_index = next(
+        row for row in indexes if row[1] == "idx_turn_requests_campaign_turn_request_id"
+    )
+    assert processing_index[2] == 1
+    assert processing_index[4] == 1
+    assert [row[2] for row in processing_index_columns] == ["campaign_id"]
+    assert "WHERE STATUS = 'PROCESSING'" in processing_index_sql.upper()
+    assert lookup_index[2] == 0
+    assert lookup_index[4] == 0
+    assert [row[2] for row in lookup_index_columns] == ["campaign_id", "turn_request_id"]
 
 
 def test_observation_schema_has_exact_columns_constraints_and_no_foreign_keys(
