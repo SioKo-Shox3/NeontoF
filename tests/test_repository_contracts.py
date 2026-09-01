@@ -3885,6 +3885,8 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "contracts/character_sheet.py",
             "contracts/scenario.py",
             "event_metadata.py",
+            "rules/__init__.py",
+            "rules/minimal_2d6.py",
             "persistence/__init__.py",
             "persistence/sqlite_database.py",
             "persistence/migrations.py",
@@ -3904,6 +3906,32 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
     )
 
     assert "event_metadata.py" in production_files
+
+
+def test_rules_module_does_not_import_event_metadata() -> None:
+    rules_root = PRODUCTION_ROOT / "rules"
+    imported_modules: set[str] = set()
+    for module_path in (rules_root / "__init__.py", rules_root / "minimal_2d6.py"):
+        tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_modules.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module is not None:
+                    imported_modules.add(node.module)
+                    imported_modules.update(
+                        f"{node.module}.{alias.name}" for alias in node.names if alias.name != "*"
+                    )
+                if node.level and (
+                    (node.module is not None and node.module.rsplit(".", 1)[-1] == "event_metadata")
+                    or any(alias.name == "event_metadata" for alias in node.names)
+                ):
+                    imported_modules.add("neontof.event_metadata")
+
+    assert not any(
+        module == "neontof.event_metadata" or module.startswith("neontof.event_metadata.")
+        for module in imported_modules
+    )
 
 
 def test_forbidden_dockerfile_sdk_registry_and_generated_paths_remain_forbidden(
