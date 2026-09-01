@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, cast
 
 import pytest
 
@@ -278,20 +279,41 @@ def test_observation_append_is_outside_event_append_critical_section(
     assert lock_probe.depth == 0
 
 
-@pytest.mark.skip(
-    reason=(
-        "実Turn pipelineがP1-03まで未実装のため、production pipelineの順序検証はP1-03の実装と同時に実施する。"
-        "P1-02の別transaction・failed-turn retention・lock非再入テストは引き続き実体を検証する。"
-    )
-)
 def test_observation_pipeline_orders_player_input_model_observations_then_event_append(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, observation_store, event_store, _ = _stores(tmp_path)
+    from neontof.application.turn_lifecycle import (
+        ActiveTurnRegistry,
+        TurnLifecycleCoordinator,
+        build_recovery_metadata,
+        build_turn_event_batch,
+        reserve_recovery_event_ids,
+    )
+    from neontof.application.turn_models import (
+        CachedTurnResponse,
+        PreparedTurn,
+        TurnRequestIntent,
+    )
+    from neontof.persistence.turn_request_store import TurnRequestStore
+
+    database, observation_store, event_store, _ = _stores(tmp_path)
+    request_store = TurnRequestStore(database, event_store)
     order: list[str] = []
+    intent = TurnRequestIntent(
+        request_key=b"observation-failure",
+        request_kind="submit",
+        requested_media_type="application/json",
+        turn_request_id="turn-request:observation",
+        campaign_id="campaign:alpha",
+        session_id="session:main",
+        scene_id="scene:hall",
+        turn_id="turn:observation",
+        root_turn_request_id="turn-request:observation",
+        input_digest=SHA256,
+        initial_recovery_payload=b"initial-recovery-payload",
+    )
     real_append_transcript: Callable[[Any], None] = observation_store.append_transcript
     real_append_telemetry: Callable[[Any], None] = observation_store.append_telemetry
-    real_event_append: Callable[[Any], Any] = event_store.append
 
     def append_transcript(record: Any) -> None:
         order.append(f"transcript:{record.kind}")
@@ -303,45 +325,79 @@ def test_observation_pipeline_orders_player_input_model_observations_then_event_
 
     def append_event(batch: Any) -> Any:
         order.append("event_append")
-        return real_event_append(batch)
+        del batch
+        raise RuntimeError("event append failed")
 
     monkeypatch.setattr(observation_store, "append_transcript", append_transcript)
     monkeypatch.setattr(observation_store, "append_telemetry", append_telemetry)
     monkeypatch.setattr(event_store, "append", append_event)
 
-    observation_store.append_transcript(
-        _transcript("player_input", "transcript:ordered-input", data={"text": "search"})
-    )
-    observation_store.append_transcript(
-        _transcript(
-            "model_request",
-            "transcript:ordered-request",
-            data={
-                "context_digest": SHA256,
-                "context_item_count": 0,
-                "output_schema": "semantic-result-v1",
-            },
+    def prepare(*_: Any) -> PreparedTurn:
+        observation_store.append_transcript(
+            _transcript(
+                "player_input",
+                "transcript:ordered-input",
+                data={"text": "search"},
+                campaign_id="campaign:alpha",
+                session_id="session:main",
+                turn_id="turn:observation",
+            )
         )
-    )
-    observation_store.append_transcript(
-        _transcript(
-            "model_response",
-            "transcript:ordered-response",
-            data={
-                "response_digest": SHA256,
-                "narrative_byte_length": 5,
-                "proposed_event_count": 0,
-                "proposed_fact_count": 0,
-            },
+        observation_store.append_telemetry(
+            _telemetry(
+                "telemetry:ordered",
+                campaign_id="campaign:alpha",
+                session_id="session:main",
+                turn_id="turn:observation",
+                cost_microusd=5,
+            )
         )
-    )
-    observation_store.append_telemetry(_telemetry("telemetry:ordered"))
-    _fail_event(event_store)
+        return PreparedTurn(
+            effect_candidates=(),
+            terminal_status="committed",
+            scenario_end=None,
+            abort_reason=None,
+            staged_recovery_payload=b"staged-recovery-payload",
+        )
 
-    assert order == [
-        "transcript:player_input",
-        "transcript:model_request",
-        "transcript:model_response",
-        "telemetry",
-        "event_append",
-    ]
+    def event_ids(identity: Any, prepared: Any) -> tuple[str, ...]:
+        del prepared
+        reservation = reserve_recovery_event_ids(identity)
+        return (
+            reservation.accepted_event_id,
+            reservation.resumed_event_id,
+            "event:observation-committed",
+        )
+
+    coordinator = TurnLifecycleCoordinator(
+        event_store=event_store,
+        request_store=request_store,
+        observation_store=observation_store,
+        active_turn_registry=ActiveTurnRegistry(),
+        response_rebuilder=cast(
+            Any,
+            lambda *_: CachedTurnResponse(
+                status_code=200, media_type="application/json", body=b"ok"
+            ),
+        ),
+        undo_response_rebuilder=cast(
+            Any,
+            lambda *_: CachedTurnResponse(
+                status_code=200, media_type="application/json", body=b"ok"
+            ),
+        ),
+        turn_event_factory=build_turn_event_batch,
+        event_id_sequence=event_ids,
+        utc_occurred_at=lambda: OCCURRED_AT,
+        recovery_event_id_source=reserve_recovery_event_ids,
+        recovery_metadata_factory=build_recovery_metadata,
+        event_boundary_lock=threading.Lock(),
+    )
+
+    with pytest.raises(RuntimeError, match="event append failed"):
+        coordinator.execute(intent=intent, prepare=prepare)
+
+    assert order == ["transcript:player_input", "telemetry", "event_append"]
+    assert observation_store.read_transcript("campaign:alpha", "turn:observation")
+    assert observation_store.session_cost_microusd("campaign:alpha", "session:main") == 5
+    assert event_store.read_campaign("campaign:alpha") == ()

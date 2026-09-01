@@ -377,7 +377,7 @@ DATABASE_OPERATION_ALLOWLIST_COUNTS.update(
         ): 2,
     }
 )
-CURRENT_EVENTSTORE_CALLER_COUNT = 0
+CURRENT_EVENTSTORE_CALLER_COUNT = 2
 P1_03_EVENTSTORE_CALLER_COUNT = 2
 
 RUNTIME_CONNECT_PATH = "src/neontof/persistence/sqlite_database.py"
@@ -724,9 +724,13 @@ class _SqliteUsageVisitor(ast.NodeVisitor):
         return parts is not None and parts[-1] == "_event_store"
 
     def _is_safe_event_store_value(self, value: ast.AST) -> bool:
-        return self._is_event_store_reference(value) or (
-            isinstance(value, ast.Name)
-            and (value.id == "event_store" or value.id in self.event_store_names)
+        return (
+            self._is_event_store_reference(value)
+            or (
+                isinstance(value, ast.Name)
+                and (value.id == "event_store" or value.id in self.event_store_names)
+            )
+            or (isinstance(value, ast.Call) and _receiver_terminal_name(value.func) == "EventStore")
         )
 
     @staticmethod
@@ -3866,6 +3870,8 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "main.py",
             "config.py",
             "app.py",
+            "application/__init__.py",
+            "application/turn_lifecycle.py",
             "application/turn_models.py",
             "contracts/__init__.py",
             "contracts/base.py",
@@ -5478,7 +5484,16 @@ class TurnLifecycleCoordinator:
             if _append_receiver_is_event_store(call, record.visitor):
                 key = (record.relative_path, qualified_name)
                 production_counts[key] = production_counts.get(key, 0) + 1
-    assert production_counts == {}
+    assert production_counts == {
+        (
+            "src/neontof/application/turn_lifecycle.py",
+            "neontof.application.turn_lifecycle.TurnLifecycleCoordinator.execute",
+        ): 1,
+        (
+            "src/neontof/application/turn_lifecycle.py",
+            "neontof.application.turn_lifecycle.TurnLifecycleCoordinator.revert_latest",
+        ): 1,
+    }
     assert sum(production_counts.values()) == CURRENT_EVENTSTORE_CALLER_COUNT
     assert _eventstore_append_caller_violations(PRODUCTION_ROOT) == []
     assert _sqlite_usage_violations(synthetic_root) == []
@@ -5565,6 +5580,17 @@ class EventStore:
 
 def execute(database: object, batch: object) -> None:
     EventStore(database).append(batch)
+""",
+        ),
+        "constructor_alias": (
+            "application/other.py",
+            """
+class EventStore:
+    pass
+
+def execute(database: object, batch: object) -> None:
+    store = EventStore(database)
+    store.append(batch)
 """,
         ),
     }
