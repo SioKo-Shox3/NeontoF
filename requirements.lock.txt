@@ -540,7 +540,7 @@ pyyaml==6.0.3 \
     --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
-    # via -r requirements-dev.in
+    # via -r requirements.in
 ruff==0.16.3 \
     --hash=sha256:09571e6d1288ed9be475207a3ac04ada404f1cd898104be0f6ab8d7df438575b \
     --hash=sha256:0c5710e247a58a4521e66e124ba9a74655b414f61ba3a2e9e3811e11098f48f7 \

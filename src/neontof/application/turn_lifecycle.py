@@ -106,6 +106,8 @@ _ROLE_FIELDS: dict[RecoveryEventRole, str] = {
     "recovery_aborted": "recovery_aborted_event_id",
 }
 
+BootstrapPreparation = Callable[[], EventBatch]
+
 
 def _json_bytes(value: object) -> bytes:
     return json.dumps(
@@ -1030,6 +1032,46 @@ class TurnLifecycleCoordinator:
         self._recovery_metadata_factory = recovery_metadata_factory
         self._event_boundary_lock = event_boundary_lock
 
+    def append_bootstrap(
+        self,
+        *,
+        campaign_id: CampaignId,
+        prepare: BootstrapPreparation,
+    ) -> tuple[StoredEvent, ...]:
+        """Validate and append the initial batch inside the shared Event boundary."""
+
+        boundary_entered = False
+        try:
+            self._event_boundary_lock.__enter__()
+            boundary_entered = True
+            campaign_events = self._event_store.read_campaign(campaign_id)
+            if campaign_events:
+                raise ValueError("bootstrap requires an empty campaign Event Log")
+
+            candidate_batch = prepare()
+            if candidate_batch.campaign_id != campaign_id:
+                raise ValueError("bootstrap batch campaign ID does not match")
+            virtual_events = validate_and_materialize_candidate(campaign_events, candidate_batch)
+            bootstrap_turn_ids = {
+                event.turn_id for event in virtual_events if event.turn_id is not None
+            }
+            if len(bootstrap_turn_ids) != 1:
+                raise ValueError("bootstrap batch must contain exactly one turn")
+            for turn_id in bootstrap_turn_ids:
+                if project_turn_status(turn_id, virtual_events) != "committed":
+                    raise ValueError("bootstrap batch must finish with a committed turn")
+
+            appended_events = self._event_store.append(candidate_batch)
+            campaign_events = self._event_store.read_campaign(campaign_id)
+            rebuild_projection(campaign_events)
+            for turn_id in bootstrap_turn_ids:
+                if project_turn_status(turn_id, campaign_events) != "committed":
+                    raise ValueError("appended bootstrap batch did not commit its turn")
+            return appended_events
+        finally:
+            if boundary_entered:
+                self._event_boundary_lock.__exit__(None, None, None)
+
     def _processing_result(self, intent: TurnRequestIntent) -> ProcessingTurnResult:
         return ProcessingTurnResult(
             type="processing",
@@ -1451,6 +1493,7 @@ __all__ = (
     "ActiveTurnAcquisition",
     "ActiveTurnRegistry",
     "ActiveTurnToken",
+    "BootstrapPreparation",
     "ExistingActiveTurn",
     "OwnedActiveTurn",
     "TurnLifecycleCoordinator",

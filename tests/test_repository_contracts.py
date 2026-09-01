@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 import tomllib
 from collections.abc import Iterable
@@ -92,6 +93,9 @@ CI_GATE_COMMANDS = (
     ".venv/Scripts/python -m ruff check src tests",
     '.venv/Scripts/python -m mypy --strict src tests --exclude "tests/typecheck_fixtures"',
     ".venv/Scripts/python -m pytest -q",
+)
+EXPECTED_REQUIREMENTS_LOCK_FINGERPRINT = (
+    "c7efde3d35a1a1faeb6ec17ee953e4f3389b51963ec462fe2288535e610be6a6"
 )
 
 SQLITE_MODULE_REFERENCE_NAMES = frozenset(
@@ -377,8 +381,8 @@ DATABASE_OPERATION_ALLOWLIST_COUNTS.update(
         ): 2,
     }
 )
-CURRENT_EVENTSTORE_CALLER_COUNT = 2
-P1_03_EVENTSTORE_CALLER_COUNT = 2
+CURRENT_EVENTSTORE_CALLER_COUNT = 3
+P1_05_EVENTSTORE_CALLER_COUNT = 3
 
 RUNTIME_CONNECT_PATH = "src/neontof/persistence/sqlite_database.py"
 RUNTIME_CONNECT_QUALIFIED_NAME = (
@@ -398,6 +402,10 @@ EVENTSTORE_CALLER_ALLOWLIST = {
     (
         "src/neontof/application/turn_lifecycle.py",
         "neontof.application.turn_lifecycle.TurnLifecycleCoordinator.revert_latest",
+    ),
+    (
+        "src/neontof/application/turn_lifecycle.py",
+        "neontof.application.turn_lifecycle.TurnLifecycleCoordinator.append_bootstrap",
     ),
 }
 EVENT_DML_PATH = "src/neontof/persistence/event_store.py"
@@ -556,6 +564,44 @@ def _direct_requirement_names(path: Path) -> set[str]:
         assert match is not None, line
         names.add(match.group("name").lower())
     return names
+
+
+def _requirements_lock_fingerprint(lock_text: str) -> str:
+    records: list[tuple[str, str, frozenset[str]]] = []
+    current_name: str | None = None
+    current_version: str | None = None
+    current_hashes: set[str] = set()
+    for line in lock_text.splitlines():
+        match = re.match(
+            r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s\\]+)(?:\s+\\)?$",
+            line,
+        )
+        if match is not None:
+            if current_name is not None and current_version is not None:
+                records.append((current_name, current_version, frozenset(current_hashes)))
+            current_name = match.group("name")
+            current_version = match.group("version")
+            current_hashes = set()
+            continue
+        if current_name is not None:
+            match = re.match(
+                r"^\s+--hash=(?P<hash>[^\s\\]+)(?:\s+\\)?$",
+                line,
+            )
+            if match is not None:
+                current_hashes.add(match.group("hash"))
+    if current_name is not None and current_version is not None:
+        records.append((current_name, current_version, frozenset(current_hashes)))
+
+    canonical_lines: list[str] = []
+    for name, version, hashes in sorted(
+        records,
+        key=lambda record: (record[0], record[1], tuple(sorted(record[2]))),
+    ):
+        canonical_lines.append(f"{name}=={version}")
+        canonical_lines.extend(f"--hash={hash_value}" for hash_value in sorted(hashes))
+    canonical = "\n".join(canonical_lines)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _tracked_candidate_files(root: Path = REPOSITORY_ROOT) -> list[Path]:
@@ -3594,9 +3640,9 @@ def _eventstore_append_caller_violations(production_root: Path) -> list[Path]:
     for record in records:
         if record.relative_path != "src/neontof/application/turn_lifecycle.py":
             continue
-        # The lifecycle path's presence is the implementation-stage boundary.  When
-        # P1-03 exists, both expected methods must exist with one call each; the
-        # P1-01c baseline has no lifecycle path and therefore still requires zero.
+        # The lifecycle path's presence is the implementation-stage boundary.  Every
+        # expected coordinator method must exist with one call; the P1-01c baseline
+        # has no lifecycle path and therefore still requires zero.
         for relative_path, qualified_name in EVENTSTORE_CALLER_ALLOWLIST:
             if (
                 relative_path == record.relative_path
@@ -3789,10 +3835,10 @@ def test_repository_contracts_fix_runtime_and_dev_root_sets() -> None:
     assert _direct_requirement_names(REPOSITORY_ROOT / "requirements.in") == {
         "fastapi",
         "pydantic",
+        "pyyaml",
         "uvicorn",
     }
     assert _direct_requirement_names(REPOSITORY_ROOT / "requirements-dev.in") == {
-        "pyyaml",
         "httpx",
         "mypy",
         "pytest",
@@ -3803,17 +3849,17 @@ def test_repository_contracts_fix_runtime_and_dev_root_sets() -> None:
 
 def test_repository_contracts_fix_versions_and_lock_boundary() -> None:
     assert (REPOSITORY_ROOT / "requirements.in").read_text(encoding="utf-8") == (
-        "fastapi==0.141.1\npydantic==2.13.4\nuvicorn==0.52.3\n"
+        "fastapi==0.141.1\npydantic==2.13.4\nPyYAML==6.0.3\nuvicorn==0.52.3\n"
     )
     dev_requirements = (REPOSITORY_ROOT / "requirements-dev.in").read_text(encoding="utf-8")
     assert "-r requirements.in\n" in dev_requirements
-    assert "PyYAML==6.0.3\n" in dev_requirements
     assert "mypy==2.3.1\n" in dev_requirements
     assert "pytest==9.1.1\n" in dev_requirements
     assert "ruff==0.16.3\n" in dev_requirements
 
     lock_text = (REPOSITORY_ROOT / "requirements.lock.txt").read_text(encoding="utf-8")
-    assert "--hash=sha256:" in lock_text
+    # `# via`は依存の入口の変化を示すだけなので、lock内容のfingerprintへ含めない。
+    assert _requirements_lock_fingerprint(lock_text) == EXPECTED_REQUIREMENTS_LOCK_FINGERPRINT
     forbidden_sdk_name = "open" + "ai"
     assert forbidden_sdk_name not in lock_text.lower()
     assert "pip-tools" not in lock_text.lower()
@@ -3871,6 +3917,7 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "config.py",
             "app.py",
             "application/__init__.py",
+            "application/bootstrap_service.py",
             "application/turn_lifecycle.py",
             "application/turn_models.py",
             "contracts/__init__.py",
@@ -3884,6 +3931,11 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "contracts/transport.py",
             "contracts/character_sheet.py",
             "contracts/scenario.py",
+            "authoring/__init__.py",
+            "authoring/yaml_loader.py",
+            "authoring/character_loader.py",
+            "authoring/scenario_loader.py",
+            "authoring/bootstrap.py",
             "event_metadata.py",
             "rules/__init__.py",
             "rules/minimal_2d6.py",
@@ -5466,7 +5518,7 @@ class ProjectionStore:
         assert rejected_path in _cross_module_violations(synthetic_root)
 
 
-def test_eventstore_append_caller_allowlist_requires_exact_qualified_path_and_count(
+def test_p1_05_adds_only_the_third_eventstore_append_callsite(
     tmp_path: Path,
 ) -> None:
     synthetic_root = _synthetic_production_root(tmp_path)
@@ -5481,6 +5533,11 @@ class TurnLifecycleCoordinator:
         store.append(batch)
 
     def revert_latest(self, event_store: object, batch: object) -> None:
+        self._event_store = event_store
+        store = self._event_store
+        store.append(batch)
+
+    def append_bootstrap(self, event_store: object, batch: object) -> None:
         self._event_store = event_store
         store = self._event_store
         store.append(batch)
@@ -5503,8 +5560,12 @@ class TurnLifecycleCoordinator:
             "src/neontof/application/turn_lifecycle.py",
             "neontof.application.turn_lifecycle.TurnLifecycleCoordinator.revert_latest",
         ): 1,
+        (
+            "src/neontof/application/turn_lifecycle.py",
+            "neontof.application.turn_lifecycle.TurnLifecycleCoordinator.append_bootstrap",
+        ): 1,
     }
-    assert sum(synthetic_counts.values()) == P1_03_EVENTSTORE_CALLER_COUNT
+    assert sum(synthetic_counts.values()) == P1_05_EVENTSTORE_CALLER_COUNT
     production_records, _ = _source_records(PRODUCTION_ROOT)
     production_counts: dict[tuple[str, str], int] = {}
     for record in production_records:
@@ -5520,6 +5581,10 @@ class TurnLifecycleCoordinator:
         (
             "src/neontof/application/turn_lifecycle.py",
             "neontof.application.turn_lifecycle.TurnLifecycleCoordinator.revert_latest",
+        ): 1,
+        (
+            "src/neontof/application/turn_lifecycle.py",
+            "neontof.application.turn_lifecycle.TurnLifecycleCoordinator.append_bootstrap",
         ): 1,
     }
     assert sum(production_counts.values()) == CURRENT_EVENTSTORE_CALLER_COUNT
@@ -5636,12 +5701,21 @@ def test_eventstore_append_caller_allowlist_rejects_third_callsite(tmp_path: Pat
         "application/turn_lifecycle.py",
         """
 class TurnLifecycleCoordinator:
+    def execute(self) -> None:
+        self._event_store.append(first)
+
+    def revert_latest(self) -> None:
+        self._event_store.append(second)
+
     def append_bootstrap(self) -> None:
-        self._event_store.append(batch)
+        self._event_store.append(third)
+
+    def append_other(self) -> None:
+        self._event_store.append(fourth)
 """,
     )
 
-    assert rejected_path in _sqlite_usage_violations(synthetic_root)
+    assert rejected_path in _eventstore_append_caller_violations(synthetic_root)
 
 
 def test_events_dml_allowlist_requires_exact_storage_path_and_nested_operation(
