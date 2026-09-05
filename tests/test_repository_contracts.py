@@ -3949,6 +3949,8 @@ def test_exact_production_manifest_requires_explicit_entries() -> None:
             "model/fake_provider.py",
             "model/scripted_provider.py",
             "model/recorded_fixture.py",
+            "model/gateway.py",
+            "model/gateway_models.py",
             "observability/__init__.py",
             "observability/records.py",
             "observability/sanitization.py",
