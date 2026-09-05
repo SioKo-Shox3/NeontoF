@@ -392,6 +392,8 @@ production code
   → never imports tests
 ```
 
+依存方向の中で、`src/neontof/model/gateway_models.py`は既存contractsとrulesに依存する純粋な公開契約のowner、`src/neontof/model/gateway.py`はその型と既存のP0 model型に依存するGatewayのownerとする。`src/neontof/application/context_builder.py`は公開型を再定義せず`gateway_models.py`からimportし、`ApplicationRegistry`、builder、selector、Entity解決を所有する。P1-08とP1-11も同じimport境界を使い、P1-08は`ModelGateway`を`model/gateway.py`から、P1-11は公開型を`gateway_models.py`から、`ApplicationRegistry`とEvent-derived selectorを`context_builder.py`からimportする。公開契約をapplicationまたはweb側で複製しない。
+
 `src/neontof/event_metadata.py`はpersistence所有ではないneutral top-level moduleで、既存`src/neontof/contracts`にだけ依存する。`persistence`、`rules`、`authoring`、`application`、`model`、`web`をimportしない。
 
 `ProjectionStore`から`EventStore.append()`を呼ばない。`ModelGateway`から`EventStore`を呼ばない。P1-08のmaterializer、C-02承認時のP1-09 promotion、P1-12の`ScenarioRuntime`はcurrent `TurnRequestIdentity`を受け、Event ID / `OccurredAt`を持たないpre-ID `PreparedEffect`候補を返し、Stateを直接更新しない。候補はP1-08のper-execute immutable `TurnPreparationContext`をclosureに保持する`TurnEngine.bind_turn_preparation(*, context=...)`が返すbound callbackで最終`PreparedTurn.effect_candidates`へ合流し、既存のTurnEventBatchFactoryとcoordinatorの一回のappendへ渡す。C-02延期時はP1-09 producerを作らず、P1-12はP1-08のbase preparationへ独立に候補を追加する。
@@ -3392,189 +3394,14 @@ feat: CharacterとScenarioをEventへ正規化する
 
 P1-06のproduction manifest追加は`src/neontof/model/gateway_models.py`と`src/neontof/model/gateway.py`の2つである。
 
-**公開型とシグネチャ**
-
-```python
-class SessionBudget(ContractModel):
-    campaign_id: CampaignId
-    session_id: SessionId
-    limit_microusd: int
-    input_microusd_per_million_tokens: int
-    output_microusd_per_million_tokens: int
-    cached_microusd_per_million_tokens: int
-    max_attempts: Literal[1] = 1
-
-class GatewayRequest(ContractModel):
-    public_context: PublicContext
-    player_input: str
-    dice_result: DiceResult
-    max_narrative_chars: int
-
-class GatewaySuccess(ContractModel):
-    type: Literal["success"]
-    response: ModelResponse
-    attempts: int
-    cost_microusd: int
-
-class GatewayFailure(ContractModel):
-    type: Literal["failure"]
-    code: Literal[
-        "budget_exceeded",
-        "timeout",
-        "model_error",
-        "invalid_json",
-    ]
-    attempts: Literal[1]
-
-GatewayOutcome = GatewaySuccess | GatewayFailure
-
-class ModelGateway:
-    def __init__(
-        self,
-        *,
-        provider: TestProvider,
-        observations: ObservationStore,
-        budget: SessionBudget,
-        timeout_seconds: float,
-    ) -> None: ...
-
-    def invoke(self, request: GatewayRequest) -> GatewayOutcome: ...
-```
-
-`ModelGateway`のcallerは完成済みのmodel requestを渡さず、`GatewayRequest`の`public_context`、`player_input`、Event-derived `dice_result`、`max_narrative_chars`だけを渡す。秘密を含まない最終provider requestへのenvelope/mappingは、C-03で承認された境界だけが担当する。C-03承認前に既存P0 provider invocation shapeへ暗黙にmappingしたり、P0型やForbidden pathをこの計画から変更したりしない。
-
-通常Turnの`ModelRequest.roles`は次に固定する。
-
-```python
-("referee", "world_simulator", "npc_actor", "narrator")
-```
-
-1 Turnに1つの`ModelCallId`だけを発行し、provider invocationを1回だけ行う。`max_attempts=1`でretryは0回とする。budgetはその1回の前に確認し、timeout/errorはTelemetryとTranscriptへ記録してabortする。費用は整数`cost_microusd`で計算し、失敗後にrollbackしない。Roadmapの「無限retryしない」上限を、Phase 1では「0 retry」とする。
-
-**テストファースト**
-
-- `test_budget_is_checked_before_first_attempt`
-- `test_timeout_aborts_without_retry`
-- `test_model_error_aborts_without_retry`
-- `test_one_turn_uses_one_model_call_id`
-- `test_normal_turn_provider_invocation_count_is_one`
-- `test_success_records_usage_and_cost`
-- `test_failed_attempt_cost_is_not_rolled_back`
-- `test_api_key_sentinel_never_reaches_request_response_or_log`
-- `test_fake_provider_requires_no_api_key`
-- `test_recorded_fixture_can_replace_fake_provider`
-- `test_provider_spy_receives_public_only_request_with_player_input_and_dice`
-
-**実装前の検証条件**
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests/model_gateway tests/test_repository_contracts.py -q
-```
-
-実装前のfocused commandではmissing moduleを、gateway skeleton後はprovider call count `2`に対する`1`期待またはC-03 conditional provider-boundary assertion未実装を失敗理由として確認する。C-03で選択した契約に対応するtest/signatureが成立するまで、P1-06を完了扱いにしない。
-
-**完了条件**
-
-```text
-max_attempts_observed=1
-logical_model_calls_per_turn=1
-provider_invocations_per_turn=1
-budget_checked_before_call=True
-secret_hits=0
-```
-
-に相当するassertionが全てpassし、provider直前の実際のrequestがpublic-onlyで`gm_only`を含まず、callerの`player_input`と`dice_result`が到達する。C-03で承認された契約をP1-06の型、signature、Fake / Recorded Gateway、testへ反映する。provider approvalが完了するまでconcrete real Provider adapterを実装、GREEN、commit扱いにしない。
-`tests/test_repository_contracts.py`のmanifest/forbidden guardも同じcommandでexit `0`となる。
-
-### C-03判断Gate — Provider request boundary
-
-既存P0の`ModelRequest`は`context: tuple[FactRecord, ...]`だけを持ち、`player_input`と`dice_result`を表せない。`src/neontof/model/model_invoker.py`、`fake_provider.py`、`recorded_fixture.py`、既存`tests/model/**`はP1-06のForbidden pathであり、現契約だけでは、`ModelGateway`から既存providerの最終invoke境界へ秘密を渡さずにplayer inputとdiceを到達させるenvelope/mappingを確定できない。
-
-C-03では次のいずれかをユーザーが明示承認し、選択された契約をP1-06の型、signature、dependency、testへ反映する。concrete real Provider adapterはprovider approvalが完了するまで開始しない。
-
-1. **既存P0 ModelRequest契約を上位改訂する:** `ModelRequest`へplayer input/diceを表す既存契約準拠のfieldまたはcontext mappingを追加し、`model_invoker.py`、provider境界、既存model test、schema/validator、依存する上位文書の変更範囲を列挙して承認する。Phase 1 planからForbidden pathを直接編集せず、上位改訂を先に完了する。
-2. **Phase 1の明示承認済みProviderRequest adapterとFake adapterを追加する:** `GatewayRequest`からpublic-onlyの最終envelopeを作るadapterを新設し、既存TestProvider境界へplayer input/diceを安全にmappingする。adapterのpath、signature、dependency、Fake adapter、provider spy test、secret boundary、staging pathをP1-06の契約として固定する。二つ目のProvider abstractionやregistryは作らない。
-
-各選択肢の影響は、P0 `ModelRequest`のschema、既存invoke境界、provider spyの入力shape、Fake/Recorded fixtureのmapping、Forbidden pathの扱い、依存とtest pathに及ぶ。承認だけで曖昧な実Provider実装を開始しない。固定responseで`player_input`または`dice_result`を無視する方式は、Phase 1 completionとしない。
-
-Provider approval後、C-03の選択に対応するconcrete real Provider adapterのexact path、signature、dependency、test path、git add pathをこの計画のP1-06契約へ反映する。Fake/Recorded Gatewayのlocal implementationとvalidationはC-03 contract approval後に先行できるが、承認されたexact contractが計画・実装・検証へ反映されるまでconcrete real Provider adapterを実装、GREEN、commitしない。
-
-### Provider選定とapproval停止点（必須）
-
-Roadmap P1-06の成果物は、Fake / Recorded Fixtureと交換可能な**一つの具体的な実Provider adapter**である。Fake-onlyではP1-06またはPhase 1を完了扱いにしない。
-
-先にC-03でprovider request boundaryの方式を承認する。その後、Fake / Recorded Gateway、gateway budget、security、`max_attempts=1`、runtime testをAPI keyなし・external networkなしで実装し、normal invocation `1`、zero retry、C-03 contract approvedの条件でFake/Recorded GREENを確認する。Fake / Recordedのlocal validationはprovider approval前も続けてよい。Fake/Recorded GREENを確認した後、実Provider adapterと実行に必要なexact adapter path、signature、dependency、test path、git add pathをこの計画へ反映し、provider approval後にconcrete real Provider adapter 1つを実装する。
-
-1. concrete Provider名
-2. SDK名とversion、またはHTTP clientを使う場合の根拠
-3. API key source（Browser、通常ログ、prompt、fixture、responseへ渡さないことを含む）
-4. 想定costとsession budget
-5. network destinationとdata visibility
-6. 通常Turnの最大provider invocation数（`1`）とtimeout/error時のretry数（`0`）
-
-provider approval前はSDK dependency、key reader、external HTTP call、concrete real Provider adapter、実Provider testを追加しない。provider approval後も、C-03で承認されたexact path/signature/dependency/test path/git add pathがこの計画・実装・検証へ反映されるまで実装しない。承認内容が既存契約またはこのplanの署名を変える場合は、実装せず上位文書の判断を求める。Fake / Recordedのlocal testはAPI key/networkなしでC-03 contract approval後に実行でき、provider approval前も継続してよい。C-03とprovider approvalの選択に対応しないconcrete real Provider adapterのGREEN/commitやPhase 1 completionは認めない。
-
-**コミット境界**
-
-```powershell
-git add -- src/neontof/model/gateway_models.py src/neontof/model/gateway.py tests/model_gateway/test_gateway_budget.py tests/model_gateway/test_gateway_retry.py tests/model_gateway/test_gateway_security.py tests/model_gateway/test_gateway_fake_provider.py tests/test_repository_contracts.py
-```
-
-Test Firstではtestsを先に作成・実行し、C-03承認後、上記pathのFake/Recorded testsとimplementationを一つのlogical GREEN commitへまとめる。Fake/Recorded GREEN、provider approval、C-03で承認されたexact pathの確定後に、real adapter/test pathを明示して別のlogical GREEN commitへまとめる。承認されていないpathのconcrete real Provider adapterはGREEN/commit扱いにしない。
-
-```text
-feat: Model Gatewayの予算と安全なProvider境界を実装する
-```
-
----
-
-## P1-07: Context BuilderとEvidence Validation
-
-**作成**
-
-- `src/neontof/application/context_builder.py`
-- `src/neontof/application/entity_resolver.py`
-- `tests/application/test_context_builder.py`
-- `tests/application/test_entity_resolver.py`
-- `tests/integration/test_evidence_validation.py`
-
-**変更**
-
-- `tests/test_repository_contracts.py`
-
-P1-07のproduction manifest追加は`src/neontof/application/context_builder.py`と`src/neontof/application/entity_resolver.py`の2つである。
+このWPで着地させるのは、公開Context・Player Input・DiceをAPI keyなしで受け取るLocal Gateway（Fake / Recorded Fixture adapter）である。P1-06全体の完了条件に含まれる具体的な実Provider adapterは、別の承認済みフェーズで実装する。Local Gatewayの完了をPhase 1全体の完了とは扱わない。
 
 **公開型とシグネチャ**
 
 ```python
-from collections.abc import Sequence
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import StrictInt, StrictStr, TypeAdapter, ValidationError, model_validator
-
-from neontof.contracts.base import ContractModel
-from neontof.contracts.character_sheet import CharacterSheetV1
-from neontof.contracts.ids import (
-    CampaignId,
-    CharacterId,
-    ClockId,
-    EntityId,
-    EventId,
-    FactId,
-    ItemId,
-    LocationId,
-    LowercaseSha256,
-    NpcId,
-    ResourceId,
-    SceneId,
-    SessionId,
-    TurnId,
-    TurnRequestId,
-)
-from neontof.contracts.projection import FactRecord, Projection
-from neontof.contracts.scenario import ScenarioV1
-from neontof.contracts.semantic_result import PublicationVisibility, SemanticValidationContext
-from neontof.rules.minimal_2d6 import StatusCondition, TargetNumber
+from pydantic import Field, StrictInt, StrictStr, TypeAdapter, ValidationError, model_validator
 
 class PublicInventoryItem(ContractModel):
     item_id: ItemId
@@ -3593,14 +3420,6 @@ class PublicStaticData(ContractModel):
     clock_label: StrictStr
     clock_initial: StrictInt
     clock_max: StrictInt
-
-class ApplicationRegistry(ContractModel):
-    scenario: ScenarioV1
-    public_static_data: PublicStaticData
-    character_id: CharacterId
-    known_location_ids: tuple[LocationId, ...]
-    known_npc_ids: tuple[NpcId, ...]
-    known_clock_ids: tuple[ClockId, ...]
 
 class PublicResourceCurrent(ContractModel):
     resource_id: ResourceId
@@ -3698,14 +3517,6 @@ class ScenarioOutcomeFact(ContractModel):
     visibility: Literal["player_visible"]
     source_event_id: EventId
 
-def select_public_target_and_conditions(
-    facts: Sequence[PublicFact],
-) -> tuple[TargetNumber | None, tuple[StatusCondition, ...]]: ...
-
-def select_scenario_outcome(
-    facts: Sequence[FactRecord],
-) -> ScenarioOutcome | None: ...
-
 class PublicProjection(ContractModel):
     campaign_id: CampaignId
     session_id: SessionId
@@ -3728,6 +3539,275 @@ class PublicContext(ContractModel):
     known_clock_ids: tuple[ClockId, ...]
     context_digest: LowercaseSha256
 
+class SessionBudget(ContractModel):
+    campaign_id: CampaignId
+    session_id: SessionId
+    limit_microusd: Annotated[StrictInt, Field(ge=0)]
+    input_microusd_per_million_tokens: Annotated[StrictInt, Field(ge=0)]
+    output_microusd_per_million_tokens: Annotated[StrictInt, Field(ge=0)]
+    cached_microusd_per_million_tokens: Annotated[StrictInt, Field(ge=0)]
+    max_attempts: Literal[1] = 1
+
+class ProviderDiceResult(ContractModel):
+    action_id: ActionId
+    roll_index: NonNegativeStrictInt
+    formula: Literal["2d6"]
+    result: Annotated[StrictInt, Field(ge=2, le=12)]
+
+class GatewayRequest(ContractModel):
+    public_context: PublicContext
+    turn_id: TurnId
+    player_input: StrictStr
+    dice_result: DiceResult
+    max_narrative_chars: PositiveStrictInt
+
+class ProviderRequest(ContractModel):
+    model_call_id: ModelCallId
+    turn_id: TurnId
+    roles: tuple[Role, ...]
+    public_context: PublicContext
+    player_input: StrictStr
+    dice_result: ProviderDiceResult
+    max_narrative_chars: PositiveStrictInt
+    output_schema: Literal["semantic-result-v1"]
+
+class GatewayFixtureCase(ContractModel):
+    expected_request: ProviderRequest
+    step: ProviderStep
+
+class GatewaySuccess(ContractModel):
+    type: Literal["success"]
+    response: ModelResponse
+    attempts: Literal[1]
+    cost_microusd: Annotated[StrictInt, Field(ge=0)]
+
+class GatewayFailure(ContractModel):
+    type: Literal["failure"]
+    code: Literal[
+        "budget_exceeded",
+        "timeout",
+        "model_error",
+        "invalid_json",
+    ]
+    attempts: Literal[0, 1]
+
+GatewayOutcome = GatewaySuccess | GatewayFailure
+
+def build_provider_request(
+    *,
+    request: GatewayRequest,
+    model_call_id: ModelCallId,
+) -> ProviderRequest: ...
+
+class GatewayFixtureProvider:
+    def __init__(self, *, cases: tuple[GatewayFixtureCase, ...]) -> None: ...
+
+    def invoke(
+        self,
+        request: ProviderRequest,
+        *,
+        timeout_seconds: float,
+    ) -> ModelResponse: ...
+
+    @property
+    def calls(self) -> tuple[SanitizedProviderCallLogEntry, ...]: ...
+
+def create_gateway_fake_provider(
+    *,
+    expected_request: ProviderRequest,
+    step: ProviderStep,
+) -> GatewayFixtureProvider: ...
+
+def create_gateway_recorded_provider(
+    *,
+    expected_requests: tuple[ProviderRequest, ...],
+    fixture: RecordedFixtureV1,
+) -> GatewayFixtureProvider: ...
+
+class ModelGateway:
+    def __init__(
+        self,
+        *,
+        provider: GatewayFixtureProvider,
+        observations: ObservationStore,
+        budget: SessionBudget,
+        timeout_seconds: float,
+    ) -> None: ...
+
+    def invoke(self, request: GatewayRequest) -> GatewayOutcome: ...
+```
+
+`gateway_models.py`は、P1-07で定義していた`PublicInventoryItem`、`PublicStaticData`、`PublicResourceCurrent`、`PublicResourceProjection`、`PublicLocationProjection`、`PublicClockProjection`、`PublicFactValue`、`PublicFact`（predicate/value/holder/subject validatorを含む）、`ScenarioOutcome`、`ScenarioOutcomeFact`、`PublicProjection`、`PublicContext`を所有する。公開型のfield shapeはP1-06の公開契約定義を正本とし、`gateway_models.py`は`application`や`web`をimportしない。`ApplicationRegistry`、`build_public_static_data()`、`build_context()`、`build_semantic_validation_context()`、`select_public_target_and_conditions()`、`select_scenario_outcome()`、Entity解決はP1-07のownerに残す。既存の`ContractModel`、ID、Semantic Result、`ModelResponse`、`ProviderStep`、`RecordedFixtureV1`はそれぞれの所有moduleからimportする。
+
+`ModelGateway`のcallerは完成済みのmodel requestを渡さず、`GatewayRequest`の`turn_id`、`public_context`、`player_input`、Event-derived `dice_result`、`max_narrative_chars`だけを渡す。`turn_id`は現在の呼出しメタデータであり、`PublicProjection.turn_id`から取得しない。秘密を含まない最終provider requestへのenvelope/mappingは、追加envelope方式の`build_provider_request()`だけが担当する。P0 invocationへ情報を落とす暗黙のmapping、P0型の変更、Forbidden pathの変更は行わない。
+
+`ProviderRequest`はPhase 1 adapterが受け取る完全なenvelopeであり、`GatewayRequest`の検証済み`public_context`、`player_input`、`dice_result`、`max_narrative_chars`と、server側で生成した`model_call_id`、`turn_id`、固定roles、`output_schema`を全て保持する。`ProviderDiceResult`には`action_id`、`roll_index`、`formula`、`result`だけを写し、`campaign_seed`、`derived_seed`、API keyその他の非公開値を送らない。`GatewayFixtureProvider`は次の完全`expected_request`と実requestを照合してから`ProviderStep`を実行し、FakeとRecordedを同じ具体adapterで交換可能にする。
+
+`GatewayFailure.attempts`はvalidatorで、`code="budget_exceeded"`なら`0`、それ以外なら`1`に固定する。予算超過のfailureでは`model_call_id=None`、attempt Telemetryなしとし、成功・その他のfailureは一回のattemptとして扱う。
+
+通常Turnの`ModelRequest.roles`は次に固定する。
+
+```python
+("referee", "world_simulator", "npc_actor", "narrator")
+```
+
+1 Turnに1つの`ModelCallId`だけを発行し、provider invocationを1回だけ行う。`ModelCallId`はcall時にだけ`"model-call:" + sha256(request.turn_id.encode("utf-8")).hexdigest()`で作る。`max_attempts=1`でretryは0回とする。budgetはその1回の前に確認し、timeout、model error、invalid JSONは固定errorへ写像してTelemetryとTranscriptへ記録してabortする。費用は`(input_tokens * input_rate + output_tokens * output_rate + cached_tokens * cached_rate + 999999) // 1000000`で計算する。Fixture境界のinput_tokensは非cached分と定義する。実Providerのusage正規化はReal Providerフェーズで確定する。失敗後にrollbackしない。usageが不明なfixture failureはusage/costを`0`とし、既存消費を減らさない。
+
+`GatewayRequest`はstrictに再検証し、budgetとpublic Contextのcampaign/sessionが一致することを確認する。budget累計がlimit以上ならproviderを呼ばず、call `0`、`attempts=0`、error Transcript、attempt Telemetryなしとする。timeout値はfiniteかつ正としてadapterへ渡し、同期invokeと`ObservationStore`だけを使用する。EventStore、SQLite接続、application owner、独自lock、Gateway独自cache、thread/worker、実通信deadline/cancellationはこのWPに持ち込まない。
+
+request Transcriptは`context_digest`、`context_item_count`、`output_schema`だけ、response Transcriptはdigest、長さ、提案件数だけ、error Transcriptはallowlistの`error_code`、digest、`byte_length`だけを保存する。通常ログへrequest全文、raw exception、provider body、API key、secretを出さず、costはTranscript / Telemetryへ保持する。`SuccessStep`は既存`ModelResponse`を再検証し、`TimeoutStep`、`ModelErrorStep`、`InvalidJsonStep`は既存の意味に対応する固定例外へ写像する。
+
+**テストファースト**
+
+- `test_budget_is_checked_before_first_attempt`
+- `test_success_records_usage_and_cost`
+- `test_failed_attempt_cost_is_not_rolled_back`
+- `test_timeout_aborts_without_retry`
+- `test_model_error_aborts_without_retry`
+- `test_one_turn_uses_one_model_call_id`
+- `test_api_key_sentinel_never_reaches_request_response_or_log`
+- `test_provider_spy_receives_public_only_request_with_player_input_and_dice`
+- `test_recorded_fixture_can_replace_fake_provider`
+
+`test_model_error_aborts_without_retry`は`model_error`と`invalid_json`をparameterizeして、どちらもretryなしで終了することを検証する。`test_budget_is_checked_before_first_attempt`は予算超過時のprovider call `0`、`attempts=0`、attempt Telemetry `0`を、呼出し系は`ModelCallId` `1`・provider call `1`、player input到達、Diceの4つの公開field、seed不在、異なるinputとDiceの不一致拒否を検証する。`test_api_key_sentinel_never_reaches_request_response_or_log`はAPI keyなしでrequest、response、通常ログにsentinelがないことを確認し、`test_recorded_fixture_can_replace_fake_provider`はFakeとRecordedをkeyなし・network遮断下で同じ具体adapterへ交換できることを確認する。これら9名以外のGateway test/helper fileは追加しない。
+
+**実装前の検証条件**
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/model_gateway tests/test_repository_contracts.py -q
+```
+
+Test Firstでは上記9名を先に作成・実行し、missing gateway moduleによるREDを実測してからLocal Gatewayを実装する。同じfocused commandのGREENと全ゲートで閉じる。P0 Providerの既存型・loader・stepsは変更せず再利用する。
+
+**完了条件**
+
+```text
+max_attempts_observed=1
+logical_model_calls_per_turn=1
+provider_invocations_per_turn=1
+budget_checked_before_call=True
+secret_hits=0
+```
+
+に相当するassertionが全てpassし、provider直前の実際のrequestがpublic-onlyで`gm_only`を含まず、callerの`player_input`と`dice_result`が到達する。C-03で承認された契約をP1-06の型、signature、Fake / Recorded Gateway、testへ反映する。provider approvalが完了するまでconcrete real Provider adapterを実装、GREEN、commit扱いにしない。
+`tests/test_repository_contracts.py`のmanifest/forbidden guardも同じcommandでexit `0`となる。
+
+### C-03確定契約 — Provider request boundary
+
+C-03は、P0の`ModelRequest`、`model_invoker.py`、`fake_provider.py`、`recorded_fixture.py`、既存`tests/model/**`を変更せず、Phase 1の`ProviderRequest` adapterで完全なpublic-only envelopeを作る方式に固定する。`GatewayRequest`の`turn_id`、`public_context`、`player_input`、`dice_result`、`max_narrative_chars`を、`build_provider_request()`が検証済みのまま`ProviderRequest`へ写し、`model_call_id`、固定roles、`output_schema`を加える。`ProviderDiceResult`へは`action_id`、`roll_index`、`formula`、`result`だけを写し、campaign seed、derived seed、API key、その他の非公開値を渡さない。
+
+この追加envelope方式、`GatewayFixtureProvider`、Fake/Recorded factory、provider spy、secret boundary、staging pathをP1-06のLocal Gateway契約として固定する。P0 invocationに情報を落としたmapping、player inputまたはDiceを無視する固定response、二つ目のProvider abstractionやregistryは作らない。
+
+C-03のenvelope方式とLocal Gatewayは今回の承認範囲で実装できる。実Providerの名前、SDKまたはHTTP client、API key source、cost、network destination、data visibility、timeout/error時のretryは別のprovider approvalで確定し、その承認前に実Provider adapter、SDK dependency、key reader、external HTTP call、実Provider testを追加しない。実ProviderはFake/Recordedと同じ完全envelopeを受け取る一つのadapterとして、exact path、signature、dependency、test path、git add pathを承認後に定める。
+
+### Provider選定とapproval停止点（必須）
+
+Roadmap P1-06の成果物は、Fake / Recorded Fixtureと交換可能な**一つの具体的な実Provider adapter**である。Fake-onlyではP1-06またはPhase 1を完了扱いにしない。
+
+先に確定済みC-03 envelope方式でLocal Gateway、budget、security、`max_attempts=1`、runtime testをAPI keyなし・external networkなしで実装し、normal invocation `1`、zero retry、完全envelope照合の条件でGREENを確認する。Fake/Recordedのlocal validationはprovider approvalから独立して進められる。実Providerはその後の別承認フェーズでのみ実装し、P1-06全体とPhase 1の上位Gateは、実Provider adapterが存在するまで完了扱いにしない。
+
+1. concrete Provider名
+2. SDK名とversion、またはHTTP clientを使う場合の根拠
+3. API key source（Browser、通常ログ、prompt、fixture、responseへ渡さないことを含む）
+4. 想定costとsession budget
+5. network destinationとdata visibility
+6. 通常Turnの最大provider invocation数（`1`）とtimeout/error時のretry数（`0`）
+
+provider approval前はSDK dependency、key reader、external HTTP call、concrete real Provider adapter、実Provider testを追加しない。provider approval後も、C-03で承認されたexact path/signature/dependency/test path/git add pathがこの計画・実装・検証へ反映されるまで実装しない。承認内容が既存契約またはこのplanの署名を変える場合は、実装せず上位文書の判断を求める。Fake / Recordedのlocal testはAPI key/networkなしでC-03 contract approval後に実行でき、provider approval前も継続してよい。C-03とprovider approvalの選択に対応しないconcrete real Provider adapterのGREEN/commitやPhase 1 completionは認めない。
+
+**コミット境界**
+
+```powershell
+git add -- src/neontof/model/gateway_models.py src/neontof/model/gateway.py tests/model_gateway/test_gateway_budget.py tests/model_gateway/test_gateway_retry.py tests/model_gateway/test_gateway_security.py tests/model_gateway/test_gateway_fake_provider.py tests/test_repository_contracts.py
+```
+
+Test Firstではtestsを先に作成・実行し、C-03承認後、上記pathのFake/Recorded testsとimplementationを一つのlogical GREEN commitへまとめる。Fake/Recorded GREEN、provider approval、C-03で承認されたexact pathの確定後に、real adapter/test pathを明示して別のlogical GREEN commitへまとめる。承認されていないpathのconcrete real Provider adapterはGREEN/commit扱いにしない。
+
+```text
+feat: Model Gatewayの予算と安全なProvider境界を実装する
+```
+
+---
+
+## P1-07: Context BuilderとEvidence Validation
+
+**作成**
+
+- `src/neontof/application/context_builder.py`
+- `src/neontof/application/entity_resolver.py`
+- `tests/application/test_context_builder.py`
+- `tests/application/test_entity_resolver.py`
+- `tests/integration/test_evidence_validation.py`
+
+**変更**
+
+- `tests/test_repository_contracts.py`
+
+P1-07のproduction manifest追加は`src/neontof/application/context_builder.py`と`src/neontof/application/entity_resolver.py`の2つである。
+
+P1-07は`ApplicationRegistry`、公開static data/contextのbuilder、selector、Evidence validation、Entity解決を所有する。純粋な公開契約型（`PublicInventoryItem`、`PublicStaticData`、resource/location/clock projection、`PublicFactValue`、`PublicFact`とpredicate/value/holder/subject validator、`ScenarioOutcome`、`ScenarioOutcomeFact`、`PublicProjection`、`PublicContext`）は`src/neontof/model/gateway_models.py`が所有し、このsectionはそのshapeをimportして使う。
+
+**公開型とシグネチャ**
+
+```python
+from collections.abc import Sequence
+from typing import Literal
+
+from neontof.contracts.base import ContractModel
+from neontof.contracts.character_sheet import CharacterSheetV1
+from neontof.contracts.ids import (
+    CampaignId,
+    CharacterId,
+    ClockId,
+    EntityId,
+    EventId,
+    FactId,
+    ItemId,
+    LocationId,
+    LowercaseSha256,
+    NpcId,
+    ResourceId,
+    SceneId,
+    SessionId,
+    TurnId,
+    TurnRequestId,
+)
+from neontof.contracts.projection import FactRecord, Projection
+from neontof.contracts.scenario import ScenarioV1
+from neontof.contracts.semantic_result import PublicationVisibility, SemanticValidationContext
+from neontof.contracts.domain import DomainEvent
+from neontof.model.gateway_models import (
+    PublicClockProjection,
+    PublicContext,
+    PublicFact,
+    PublicFactValue,
+    PublicInventoryItem,
+    PublicLocationProjection,
+    PublicProjection,
+    PublicResourceCurrent,
+    PublicResourceProjection,
+    PublicStaticData,
+    ScenarioOutcome,
+    ScenarioOutcomeFact,
+)
+from neontof.rules.minimal_2d6 import StatusCondition, TargetNumber
+
+class ApplicationRegistry(ContractModel):
+    scenario: ScenarioV1
+    public_static_data: PublicStaticData
+    character_id: CharacterId
+    known_location_ids: tuple[LocationId, ...]
+    known_npc_ids: tuple[NpcId, ...]
+    known_clock_ids: tuple[ClockId, ...]
+
+def select_public_target_and_conditions(
+    facts: Sequence[PublicFact],
+) -> tuple[TargetNumber | None, tuple[StatusCondition, ...]]: ...
+
+def select_scenario_outcome(
+    facts: Sequence[FactRecord],
+) -> ScenarioOutcome | None: ...
+
 def build_public_static_data(
     *,
     character: CharacterSheetV1,
@@ -3746,6 +3826,7 @@ class EntityResolution(ContractModel):
 def build_context(
     *,
     projection: Projection,
+    campaign_events: tuple[DomainEvent, ...],
     registry: ApplicationRegistry,
     publication_visibility: PublicationVisibility,
 ) -> PublicContext: ...
@@ -3775,7 +3856,9 @@ def resolve_entity(
 
 `build_public_session_view()`は`public_static_data.inventory`の各`label`を順序どおり`PublicSessionView.inventory: tuple[str, ...]`へ写す。Factの`ItemId`と`PublicInventoryItem.item_id`はそのまま保持し、`EntityId`へ変換しない。
 
-`build_context(..., publication_visibility="player_visible")`はactiveかつ`player_visible`のFactだけをtyped `PublicProjection`へ投影し、`subject_id=None`のpublic Factも落とさずに`PublicContext`を先に作る。secretを一度入れてから削除する方式ではなく、最初から選択しない。resources、`Projection.locations`から作るlocations、clocks、facts、`scenario_outcome`、campaign/session/scene/turn/request identifiersはEvent replay由来のtyped projectionとして明示する。`Projection.clocks`に対象clockのrowがない場合は`PublicStaticData.clock_initial`をcurrentとして使い、`ClockAdvanced`後のrowがある場合だけそのEvent-derived valueを使う。full `Projection`はsemantic validationの内部入力に限り、Model Gateway、public HTTP view、Narrative auditへ渡さない。これらのsignatureは`PublicContext`または`PublicProjection`だけを受け取る。`PublicProjection`を組み立てるcallerは、必ず`EventStore.read_campaign(campaign_id)`が返すcampaign全体の`DomainEvent`列をrebuildしたprojectionを渡す。filtered event tuple、snapshot、observation、coordination recordを入力にしない。対象外rowが壊れている場合も`read_campaign()`のfail-closedを伝播させる。
+`build_context(..., campaign_events=..., publication_visibility="player_visible")`は、渡されたcampaign全体のvalidated `tuple[DomainEvent, ...]`から`rebuild_projection(campaign_events)`を一度行い、既存の`projection`引数と完全一致することを検証してから公開Contextを作る。不一致、Eventなしでprojectionだけがある場合、またはcampaign外の壊れたEvent rowを見落とす入力はfail-closedとする。activeかつ`player_visible`のFactだけをtyped `PublicProjection`へ投影し、`subject_id=None`のpublic Factも落とさない。secretを一度入れてから削除する方式ではなく、最初から選択しない。resources、`Projection.locations`から作るlocations、clocks、facts、`scenario_outcome`、campaign/session/scene/turn/request identifiersはEvent replay由来のtyped projectionとして明示する。`Projection.clocks`に対象clockのrowがない場合は`PublicStaticData.clock_initial`をcurrentとして使い、`ClockAdvanced`後のrowがある場合だけそのEvent-derived valueを使う。full `Projection`はsemantic validationの内部入力に限り、Model Gateway、public HTTP view、Narrative auditへ渡さない。`PublicProjection`を組み立てるcallerは、必ず`EventStore.read_campaign(campaign_id)`が返すcampaign全体の`DomainEvent`列を同じ順序で渡し、filtered event tuple、snapshot、observation、coordination recordを入力にしない。
+
+公開Projectionの`turn_id`と`turn_request_id`は、同じcampaign/sessionに属する公開可能な最後の`PlayerInputAcceptedEvent`から、`event.turn_id`と`event.payload.turn_request_id`を一組として選ぶ。該当するEventがなければ両方を`None`にする。これは履歴上最後に受理されたTurnの識別子であり、未appendの現在Turnを補わない。UndoでEventを消さないため、undo後も履歴にない識別子を捏造しない。`coordination record`、request row、呼出し側の現在値を公開ProjectionのID根拠にしない。
 
 Entity resolutionはUnicode NFKC、casefold、前後空白除去後のcanonical name / exact alias一致だけを使う。曖昧な場合は複数候補を返し、推測しない。自由文からstate effectを生成しない。
 
@@ -3809,6 +3892,8 @@ Evidenceは既存`validate_semantic_result()`によりfact existence、visibilit
 - `test_ambiguous_alias_returns_all_candidates`
 - `test_unknown_alias_does_not_guess`
 
+既存の`test_public_projection_contains_event_derived_resources_locations_clocks_and_turn_ids`、`test_public_projection_uses_complete_campaign_event_read`、`test_public_projection_fails_closed_on_corrupt_out_of_scope_event`へ、Event由来の`turn_id` / `turn_request_id`の対、Eventなし時の両`None`、`rebuild_projection(campaign_events) == projection`の不一致拒否、対象外Eventの破損に対するfail-closedをまとめてassertする。これら以外の新しいP1-07 test名は作らない。
+
 **実装前の検証条件**
 
 ```powershell
@@ -3823,6 +3908,7 @@ Evidenceは既存`validate_semantic_result()`によりfact existence、visibilit
 - unknown history fixtureのNarrativeまたはrejectionが「未決定」
 - invisible Evidence outcomeが`RejectedSemanticResult`
 - `ScenarioOutcomeFact`が既存FactRecordからsuccess/failureだけをvalidatedにrebuildし、複数・壊れた・別shapeをfail-closedにする
+- `build_context()`が全campaign Event列を受け取り、`rebuild_projection(campaign_events) == projection`を検証し、公開可能な最後の`PlayerInputAcceptedEvent`から`turn_id`と`turn_request_id`を対で復元する
 - Alias resolutionが同じstable ID
 - `tests/test_repository_contracts.py`のmanifest/forbidden guardがexit `0`
 
@@ -3862,6 +3948,7 @@ feat: Visibility Filter、PublicProjection、Evidence validation、Alias解決�
 P1-08のproduction manifest追加は`src/neontof/application/event_materializer.py`、`src/neontof/application/semantic_pipeline.py`、`src/neontof/application/turn_responses.py`、`src/neontof/application/turn_engine.py`の4つである。`src/neontof/application/turn_models.py`はP1-03で既にmanifestへ追加した共有pathであり、P1-08で再Modifyする場合もP1-03 Lifecycle commit後にSemantic Result / response型だけをserialに追加する。P1-08のpayload boundary checkpointと既存`FrozenJsonValue`のcomposite value round-trip開始前stopは維持し、P1-00で推測実装しない。
 
 P1-08では`src/neontof/application/turn_responses.py`が`InitialRecoveryPayload`、`StagedResponseSeed`、`StagedRecoveryPayload`、`RecoveryPayload`、`encode_staged_response_seed`、`decode_staged_response_seed`、`encode_recovery_payload`、`decode_recovery_payload`、`build_initial_recovery_payload`、`build_staged_recovery_payload`、`TurnResponseDocument`、`ResponseDocumentBuilder`のtyped response/codecを所有し、`src/neontof/application/turn_engine.py`が`TurnPreparationContext`、`derive_input_digest`、`derive_turn_id`、`TurnCommand`、`ResumeTurnCommand`、`TurnEngine.bind_turn_preparation(*, context=...)`、`TurnEngine.prepare_turn(*, context=..., identity=..., campaign_events=...)`を所有する。P1-03はこれらをimportせず、coordinator callbackの`TurnPreparation` aliasだけを所有する。
+P1-08は純粋な公開型を`src/neontof/model/gateway_models.py`から、`ApplicationRegistry`、公開Context builder、selectorを`src/neontof/application/context_builder.py`から、`ModelGateway`を`src/neontof/model/gateway.py`からimportする。公開型とbuilder/selectorをApplication側で再定義しない。
 
 P1-08のpayload authorityは、各inbound `Engine.execute`相当の呼出しでclaim前に`build_initial_recovery_payload(...)`を純粋・決定的に一回だけ呼ぶことを許可する。`NewClaim`では供給bytesをseedとして採用するが、`ExistingProcessingClaim` / `ExistingFinalClaim`では供給値を破棄し、保存recordのinitial/staged bytesだけをauthorityにする。claim後、`recover_processing()`、prepareではbuilderを再実行しない。normal `committed` / normal `aborted`の完成にはversion 2のcanonical outer `StagedRecoveryPayload` bytes（内側は`StagedResponseSeed`）を必須とし、recovery abortはversionに関係なく保存済みversion 1 initial payloadを使う。P1-03 / Storeはbytesをdecodeせず、P1-08の`ResponseDocumentBuilder` / recovery `ResponseRebuilder`だけがinner seedとouter `RecoveryPayload`をstrict decodeする。
 
@@ -3902,14 +3989,18 @@ from neontof.application.turn_models import (
     UndoResponseRebuilder,
 )
 from neontof.application.turn_lifecycle import TurnLifecycleCoordinator
+from neontof.model.gateway import ModelGateway
 from neontof.application.context_builder import (
+    ApplicationRegistry,
+    select_public_target_and_conditions,
+    select_scenario_outcome,
+)
+from neontof.model.gateway_models import (
     PublicContext,
     PublicProjection,
     PublicResourceProjection,
     ScenarioOutcome,
     ScenarioOutcomeFact,
-    select_public_target_and_conditions,
-    select_scenario_outcome,
 )
 from neontof.contracts.domain import DomainEvent
 from neontof.contracts.projection import Projection
@@ -4083,7 +4174,17 @@ class TurnResponseDocument(ContractModel):
 
 ResponseSerializer = Callable[[TurnResponseDocument, RequestedMediaType], StrictBytes]
 ResponseDocumentBuilder = Callable[
-    [ProcessingTurnRequestRecord, tuple[DomainEvent, ...], TurnStatus, StrictBytes],
+    [
+        ProcessingTurnRequestRecord,
+        tuple[DomainEvent, ...],
+        Projection,
+        PublicProjection,
+        PublicResourceProjection,
+        DiceProjection,
+        DiceResult | None,
+        TurnStatus,
+        StrictBytes,
+    ],
     TurnResponseDocument,
 ]
 UndoResponseDocumentBuilder = Callable[
@@ -4095,6 +4196,11 @@ def build_response_document(
     *,
     record: ProcessingTurnRequestRecord,
     campaign_events: tuple[DomainEvent, ...],
+    projection: Projection,
+    public_projection: PublicProjection,
+    resource_projection: PublicResourceProjection,
+    dice_projection: DiceProjection,
+    dice_result: DiceResult | None,
     turn_status: TurnStatus,
     response_payload: StrictBytes,
 ) -> TurnResponseDocument: ...
@@ -4180,10 +4286,10 @@ CommandからIntentへの写像は次の表だけを正本とする。
 
 この表のmapping testは、submit/resumeの全Intent identity、requested media、digest、root、server-ownedまたはURLの`turn_id`、initial payloadが一度ずつ構成され、routeがこれらを作らないことをassertする。`TurnRequestStore.claim()`はboundary lock内でaccepted/awaiting anchor、campaign/session/scene/turn context、canonical/root relationshipをstrictに検証し、Engineはclaim外で過去Eventを推測しない。
 
-`TurnResponseDocument`はP1-08が所有するtyped response bundleであり、`public_projection`、`resource_projection`、`dice_projection`、`dice_result`、`narrative`、`suggested_actions`、nonnegative `cost_microusd`、closed `processing_status`、`corrections`、`target_number`、`conditions`、`scenario_outcome`、`turn_id`、canonical `turn_request_id`、`status`を含む。P1-08の`ResponseDocumentBuilder` / `build_response_document()`はfull validated Event replay、`TurnStatus`、`select_response_payload()`が返すopaque `StrictBytes`からこのtyped documentを作る。target/conditionは`select_public_target_and_conditions()`から一度だけ導出し、P1-08 core pathの`scenario_outcome`は`None`とする。P1-12がScenarioOutcomeFact candidateをappendした拡張pathだけ、replayed `FactRecord`を`ScenarioOutcomeFact`として検証する`select_scenario_outcome()`からscenario outcomeを一度だけ導出し、Factを直接documentへ注入しない。normal `committed` / normal `aborted`の完成は`select_response_payload()`が返すversion 2のcanonical outer `StagedRecoveryPayload` bytes（内側は`encode_staged_response_seed(seed)`のbytes）を必須とし、version 1のinitial payloadだけで完了できる限定経路を作らない。`PreparedTurn.staged_recovery_payload`はこのcanonical outer bytes（内側は`encode_staged_response_seed(seed)`のbytes）を保持してstageでき、P1-03はそのbytesをopaqueに運搬するだけでJSONをdecodeまたは解釈しない。recovery abortではrecord versionに関係なく保存済みversion 1のinitial payloadを使い、awaitingでは保存済みv2 staged outer payloadを優先し、無い場合だけv1 initial payloadと固定typed presentation defaultを使う。recovery時は保存済み`initial_recovery_payload`または`staged_recovery_payload`だけを`ResponseRebuilder`へ渡し、Model、Provider、Dice、semantic pipelineを再実行しない。P1-08からP1-11へはこのdocumentとneutral/public projection型だけが流れ、P1-03はP1-11の`PublicSessionView`、`PublicSessionPresentation`、`StateFrame`をimportしない。
+`TurnResponseDocument`はP1-08が所有するtyped response bundleであり、`public_projection`、`resource_projection`、`dice_projection`、`dice_result`、`narrative`、`suggested_actions`、nonnegative `cost_microusd`、closed `processing_status`、`corrections`、`target_number`、`conditions`、`scenario_outcome`、`turn_id`、canonical `turn_request_id`、`status`を含む。P1-08の`ResponseDocumentBuilder` / `build_response_document()`へは、同じ一つのcampaign全体のvalidated `tuple[DomainEvent, ...]`と、その列をrebuildした`Projection`、`PublicProjection`、`PublicResourceProjection`、`DiceProjection`、`DiceResult`の組を渡し、`TurnStatus`と`select_response_payload()`が返すopaque `StrictBytes`も同じ呼出しで渡す。coordination recordのIDやcurrent request値から公開Projectionを補わない。target/conditionは`select_public_target_and_conditions()`から一度だけ導出し、P1-08 core pathの`scenario_outcome`は`None`とする。P1-12がScenarioOutcomeFact candidateをappendした拡張pathだけ、replayed `FactRecord`を`ScenarioOutcomeFact`として検証する`select_scenario_outcome()`からscenario outcomeを一度だけ導出し、Factを直接documentへ注入しない。normal `committed` / normal `aborted`の完成は`select_response_payload()`が返すversion 2のcanonical outer `StagedRecoveryPayload` bytes（内側は`encode_staged_response_seed(seed)`のbytes）を必須とし、version 1のinitial payloadだけで完了できる限定経路を作らない。`PreparedTurn.staged_recovery_payload`はこのcanonical outer bytes（内側は`encode_staged_response_seed(seed)`のbytes）を保持してstageでき、P1-03はそのbytesをopaqueに運搬するだけでJSONをdecodeまたは解釈しない。recovery abortではrecord versionに関係なく保存済みversion 1のinitial payloadを使い、awaitingでは保存済みv2 staged outer payloadを優先し、無い場合だけv1 initial payloadと固定typed presentation defaultを使う。recovery時は保存済み`initial_recovery_payload`または`staged_recovery_payload`だけを`ResponseRebuilder`へ渡し、Model、Provider、Dice、semantic pipelineを再実行しない。P1-08からP1-11へはこのdocumentとneutral/public projection型だけが流れ、P1-03はP1-11の`PublicSessionView`、`PublicSessionPresentation`、`StateFrame`をimportしない。
 
 `TurnEngine.bind_turn_preparation(*, context: TurnPreparationContext) -> TurnPreparation`はP1-08の具体的なbound preparation factoryであり、返すcallbackは`TurnPreparation = Callable[[TurnRequestIdentity, tuple[DomainEvent, ...]], PreparedTurn]`に適合する。callback内部の`self.prepare_turn(*, context=context, identity=identity, campaign_events=campaign_events)`だけがprepare本体を呼び、coordinatorはこのEngine methodを知らない。coordinatorがNewClaim後に先に渡したfull tupleをclosureが`rebuild_projection(campaign_events)`へ渡し、Event-derived Projection/contextを作ってからcontext.input_textでsemantic result、Dice、target/condition materializationを実行する。`materialize_accepted_result(*, identity, outcome, projection, context, dice_result) -> tuple[PreparedEffect, ...]`はmetadataを受けず、current identityとProjection/contextからpre-ID候補だけを返し、`materialize_dice_event(*, identity, result) -> PreparedEffect`も同じ境界を守る。両producerは`PreparedEffect`のenvelopeをcurrent identityから構成し、identity mismatchをEvent ID allocation前に拒否する。target/conditionのFact candidateと最終`effect_candidates`が確定するまでEvent IDを割り当てず、coordinatorから後段で渡される`event_id_sequence`を先に呼ばない。P1-08はbound callbackをcoordinatorへ渡し、`TurnPreparation`を`turn_lifecycle.py`で再定義しない。
-normal pathのresponse payloadは、bound preparation callbackが返す`PreparedTurn.staged_recovery_payload`（non-NULLならstageして保存）をEvent candidateと共にcoordinatorが運び、append後に`select_response_payload(record=..., campaign_events=...)`が選んだopaque `StrictBytes`を`ResponseRebuilder`へ渡す。`ResponseDocumentBuilder`はそのpayloadとappend後のfull replayからtyped `TurnResponseDocument`を作り、P1-03はこのbytesをdecode・JSON解釈せず、P1-11のserializerへ渡された完成bytesだけをcacheする。
+normal pathのresponse payloadは、bound preparation callbackが返す`PreparedTurn.staged_recovery_payload`（non-NULLならstageして保存）をEvent candidateと共にcoordinatorが運び、append後に同じcampaign全体のvalidated `campaign_events`を一度だけ再読する。`select_response_payload(record=..., campaign_events=...)`が選んだopaque `StrictBytes`と、その同じEvent列からrebuildした`Projection`、`PublicProjection`、`PublicResourceProjection`、`DiceProjection`、`DiceResult`の組を`ResponseDocumentBuilder` / `build_response_document()`へ渡し、typed `TurnResponseDocument`を作る。公開IDはEvent由来のProjectionからのみ復元し、coordination recordや未appendのcurrent Turnから補わない。P1-03はこのbytesをdecode・JSON解釈せず、P1-11のserializerへ渡された完成bytesだけをcacheする。
 
 normal `TurnEventBatchFactory`のP1-08 injectionは`Callable[[TurnRequestIdentity, PreparedTurn, tuple[DomainEvent, ...], OccurredAt, Sequence[EventId]], tuple[TurnEventMetadata, RecoveryEventMetadata, EventBatch]]`に固定する。NewClaim後のcoordinatorが同じ`event_boundary_lock`内で明示的に一度だけ行う`EventStore.read_campaign(record.campaign_id)`のfull validated tupleを第三引数へ渡し、factoryはEventStoreをcaptureせず、`prefix = {event | event.sequence <= identity.base_event_sequence}` / `owned_suffix = {event | event.sequence > identity.base_event_sequence}`を分ける。全role共通のenvelope（`campaign_id`、`session_id`、`scene_id`、`turn_id`）、lifecycle payloadのcanonical `turn_request_id`、submit accepted anchorだけのpayload `input_digest`をcurrent identity照合に使い、`root_turn_request_id`をEvent fieldとして要求しない。resumeの新しい`input_digest`はprefix acceptedや`TurnResumed` / `TurnAwaitingPlayer` / terminal payloadへ比較しない。`matches_current_turn_identity()`に一致するprefix/suffixだけをorigin/statusとcurrent owned stateの判定へ使う。`RecoveryMetadataFactory(record, campaign_events, inputs)`はnormal factoryとは別経路のexact三引数であり、metadata未確定時だけP1-03注入の`RecoveryEventIdSource`とUTC sourceを各一回呼んだ`RecoveryMetadataInputs`を受け取り、既存metadata時は再実行しない。P1-08は`StatusCondition` / `TargetNumber`をP1-04のrules moduleからimportして既存`FactAsserted`のtyped valueへ渡す。
 
@@ -4206,14 +4312,14 @@ Player InputのTranscript appendはEvent append critical sectionの外で別の`
 2. `TurnEngine.submit(command)` / `resume(command)`だけがcommandからpre-claim `TurnRequestIntent`、`TurnPreparationContext`、initial recovery payloadを作る。`base_event_sequence`と`staged_recovery_payload`は渡さず、claim、full Event read、`TurnStatus`確認はcoordinatorへ委譲する。Engineは`prepare = self.bind_turn_preparation(context=context)`をexecute呼出し前に作り、`TurnLifecycleCoordinator.execute(intent=intent, prepare=prepare)`へ注入する。routeは派生値を作らず、P1-08から`TurnRequestStore.claim()`を呼ばない。
 3. coordinatorがregistry判定とdurable claimを`event_boundary_lock`内で行い、`NewClaim`、`ExistingProcessingClaim`、`ExistingFinalClaim`を分岐する。registryの`ExistingActiveTurn` hitだけは既に前処理が保持するlockを奪わず`ProcessingTurnResult(response=None, status="processing", http_status_code=202)`として返す。registry miss後の`ExistingProcessingClaim`はこのvariantを返さず、recovery state machineへ入る。P1-08からEventを直接appendしない。
 4. `NewClaim`の直後、同じ`event_boundary_lock`内で`EventStore.read_campaign(record.campaign_id)`を一度だけ先に呼び、完全なvalidated `tuple[DomainEvent, ...]`を、executeへ注入済みの`prepare: TurnPreparation`（P1-08の`bind_turn_preparation(*, context=...)`が返すcallback）へ渡す。このreadはclaim transaction内のsame-connection readとは別のpreparation readであり、prepare後へ遅延させず、filtered sliceやsnapshotで代用しない。
-5. bound callbackはP1-08の具体的なpreparationとして`rebuild_projection(campaign_events)`とEvent-derived `PublicContext`を作り、closureのimmutable contextと受け取ったvalidated campaign tupleのcurrent identity / `base_event_sequence`境界からAlias、target、condition、statusを解決する。ambiguousならmodel call前に`PreparedTurn(effect_candidates=(), terminal_status="awaiting_player", scenario_end=None, abort_reason=None, staged_recovery_payload=None)`を返し、coordinatorはstarted prefixの後に`TurnAwaitingPlayer`を最後に置き、effectsなしで止める。
-6. bound callback内でcontext.input_text、public Context、deterministic dice、budgetを順に確定し、Gatewayを1 logical call、provider invocation 1回だけ実行する。request / response / timeout / error / usageはpurpose-specific allowlistでTranscript / Telemetryへ記録し、append critical sectionの内側へ入れず別の`_write` transactionとする。raw provider body/error/causeは保存せず、retry recordはPhase 1通常Turnでは作らない。instance field、global、Transcriptからinputを補わず、closure外の別commandのcontextを参照しない。
+5. bound callbackはP1-08の具体的なpreparationとして`rebuild_projection(campaign_events)`を行い、`build_context(projection=projection, campaign_events=campaign_events, registry=registry, publication_visibility="player_visible")`でEvent列とProjectionの一致を検証したEvent-derived `PublicContext`を作る。closureのimmutable contextと受け取ったvalidated campaign tupleのcurrent identity / `base_event_sequence`境界からAlias、target、condition、statusを解決する。ambiguousならmodel call前に`PreparedTurn(effect_candidates=(), terminal_status="awaiting_player", scenario_end=None, abort_reason=None, staged_recovery_payload=None)`を返し、coordinatorはstarted prefixの後に`TurnAwaitingPlayer`を最後に置き、effectsなしで止める。
+6. bound callback内でcontext.input_text、public Context、deterministic dice、budgetを順に確定し、`GatewayRequest(turn_id=identity.turn_id, public_context=public_context, player_input=context.input_text, dice_result=dice_result, max_narrative_chars=...)`を構成してGatewayを1 logical call、provider invocation 1回だけ実行する。`identity.turn_id`は現在呼出しのmetadataとして別途渡し、`PublicProjection.turn_id`から補わない。request / response / timeout / error / usageはpurpose-specific allowlistでTranscript / Telemetryへ記録し、append critical sectionの内側へ入れず別の`_write` transactionとする。raw provider body/error/causeは保存せず、retry recordはPhase 1通常Turnでは作らない。instance field、global、Transcriptからinputを補わず、closure外の別commandのcontextを参照しない。現在のTurn IDを先行appendで作らない。
 7. `validate_semantic_result()`とRule / reference / Evidence / Visibility validationを行い、検証済み`TargetNumber` / `StatusCondition`を`materialize_accepted_result(identity=identity, outcome=..., projection=..., context=..., dice_result=...)`へ渡す。materializerはmetadataを受けず、current `identity`とEvent-derived projection/contextからcurrent active targetのFactIdを得てpre-ID `PreparedEffect`列を返す。Dice producerも`materialize_dice_event(identity=identity, result=...)`として同じcurrent identityを使い、resumeの新しいinput digestや過去Turnからenvelopeを推測しない。P1-09が有効な場合はcontext.provisional_reference_textだけを明示的なpromotion referenceに使う。
 8. target/conditionのassertionを最終pre-ID effect candidatesより前に決定する。target変更時は既存active FactのEvent-derived `fact_id`を対象に`FactSuperseded`を先に、続けて`FactAsserted(predicate="target_number")`をcandidateへ含め、同値ならtarget Factを追加しない。conditionの初回は`FactAsserted(predicate="condition")`、置換は既存`FactSuperseded`を使う。active targetが複数、壊れている、missing/不明なFactId、`PublicFact` validator不合格、target `1`、未知condition、schema version `2`はfail-closedとする。ここでeffect_candidatesを確定し、`event_id_sequence`より後にこの判断を行わない。
 9. `PreparedTurn`をcoordinatorへ返す。`PreparedTurn.staged_recovery_payload`がnon-NULLなら`stage()`を一度だけ行い、最終`effect_candidates`確定後に`event_id_sequence(identity, prepared)`を一度、`utc_occurred_at()`を一度呼ぶ。その後に`turn_event_factory(identity, prepared, campaign_events, occurred_at, event_ids)`を一度呼ぶ。factoryだけが各`PreparedEffect`へEvent ID / `OccurredAt`を割り当てて`EventDraftBody`、`EventDraft`、`EventBatch`を構成する。contextはこのcallbackのclosureから外へ漏らさない。
 10. coordinatorがsubmit/resume prefixを組み立て、candidate full validationを行い、唯一のapplication-level `EventStore.append()` callsiteをcandidateがある場合だけ一度使う。P1-08から直接appendしない。
-11. append成功後は、NewClaim直後に一度取得済みのpreparation tupleを置き換えず、commit結果のauthority検証とresponse rebuildのために`EventStore.read_campaign(campaign_id)`で全validated `DomainEvent`列を読む。このpost-append authority readはpreparation readの代替ではなく、filtered slice、snapshot、coordination record、observationを入力にしない。
-12. `ResponseDocumentBuilder` / `build_response_document()`が全Event read、status、選択済みpayload、rebuild済みpublic projection/resource projection/dice projection/resultから、P1-08所有のvalidated `TurnResponseDocument`を組み立てる。`target_number`と`conditions`はvalidated `PublicFact`から`select_public_target_and_conditions()`で一度導出し、P1-08 core pathの`scenario_outcome`は`None`とし、P1-12 serial extensionでだけreplayed `FactRecord`を`ScenarioOutcomeFact`として検証する`select_scenario_outcome()`から一度導出する。narrative、suggested_actions、cost_microusd、processing_status、correctionsもtyped documentへ含める。
+11. append成功後は、NewClaim直後に一度取得済みのpreparation tupleを置き換えず、commit結果のauthority検証とresponse rebuildのために`EventStore.read_campaign(campaign_id)`で全validated `DomainEvent`列を読む。このpost-append authority readはpreparation readの代替ではなく、同じ全Event列をrebuildした`Projection`、`PublicProjection`、`PublicResourceProjection`、`DiceProjection`、`DiceResult`の組をresponse builderへ渡すための入力である。filtered slice、snapshot、coordination record、observationを入力にしない。
+12. `ResponseDocumentBuilder` / `build_response_document()`が、同じ全Event read、rebuild済みProjection組、status、選択済みpayloadから、P1-08所有のvalidated `TurnResponseDocument`を組み立てる。`target_number`と`conditions`はvalidated `PublicFact`から`select_public_target_and_conditions()`で一度導出し、P1-08 core pathの`scenario_outcome`は`None`とし、P1-12 serial extensionでだけreplayed `FactRecord`を`ScenarioOutcomeFact`として検証する`select_scenario_outcome()`から一度導出する。narrative、suggested_actions、cost_microusd、processing_status、correctionsもtyped documentへ含める。coordination recordは公開ProjectionのIDを供給しない。
 13. validated Narrativeとpost-public audit結果をcorrectionとしてresponse documentへ含める。auditはEventをrollbackまたはState変更しない。
 14. `TurnLifecycleCoordinator`だけが`ResponseRebuilder`を一回呼び、P1-08のtyped documentをP1-11のserializerへ渡してJSON/SSEまたはbuffered frame bytesを完成させ、`CachedTurnResponse`のstatus code、media、non-empty strict UTF-8 body bytesを検証する。P1-03はこのpayloadをopaque bytesとして運び、JSONを解釈しない。
 15. coordinatorだけが`TurnRequestStore.complete(*, request_key=..., expected_version=..., status=..., response=...)`を一回呼ぶ。cache commit前にHTTP adapterへframeを渡さず、P1-08は`complete()`を呼ばない。
@@ -4227,7 +4333,7 @@ Player InputのTranscript appendはEvent append critical sectionの外で別の`
 
 `tests/integration/test_complete_fake_turn.py::test_consecutive_turns_supersede_active_target_before_asserting_new_target`は、連続する二つのTurnをsemantic validation / materializer / coordinator candidate validation / append / full Event replayの順に通す。2回目のtarget変更では、Event-derivedな旧active targetの`fact_id`を対象に`FactSuperseded`を先にcandidateへ入れ、その直後に新しい`FactAsserted(predicate="target_number")`を入れる。replay後のactive targetは1件だけ、P1-08の`TurnResponseDocument` rebuildは成功し、P1-11のpresentation layerとBrowser JSON/DOMはこのtestの依存にしない。targetが変わらない場合はtarget Factを追加せず、active targetが複数または壊れている場合はfail-closedとする。直接Projectionを更新したfixture、Factを直接置いたfixture、P1-11 presentation変換の迂回ではGreenにできない。
 
-`tests/application/test_turn_responses.py::test_turn_response_document_contains_dice_projection_result_typed_presentation_inputs_and_scenario_outcome_none_core_path`は、full Event replayから得た`DiceProjection` / `DiceResult` / `PublicProjection` / `PublicResourceProjection`とvalidated `narrative`、`suggested_actions`、`cost_microusd`、`processing_status`、`corrections`、`target_number`、`conditions`、`scenario_outcome=None`を`ResponseDocumentBuilder`へ渡し、P1-08所有のtyped `TurnResponseDocument`に揃うことを確認する。実ScenarioRuntimeの`scenario_outcome` candidate、Fact append、replay、`select_scenario_outcome()`によるsuccess/failure復元はP1-12のnamed testで検証し、P1-11の`PublicSessionView`やBrowser DOMはこのtestへ持ち込まない。P1-08ではcore response bundleがpublication入力を欠かず、scenario outcomeが未接続時に`None`であることだけを検証する。
+`tests/application/test_turn_responses.py::test_turn_response_document_contains_dice_projection_result_typed_presentation_inputs_and_scenario_outcome_none_core_path`は、同じ全Event replayの`campaign_events`、その列から得た`Projection`、`DiceProjection` / `DiceResult` / `PublicProjection` / `PublicResourceProjection`とvalidated `narrative`、`suggested_actions`、`cost_microusd`、`processing_status`、`corrections`、`target_number`、`conditions`、`scenario_outcome=None`を`ResponseDocumentBuilder`へ渡し、P1-08所有のtyped `TurnResponseDocument`に揃うことを確認する。coordination recordや別のcurrent IDをbuilderへ渡して公開Projectionを作らない。実ScenarioRuntimeの`scenario_outcome` candidate、Fact append、replay、`select_scenario_outcome()`によるsuccess/failure復元はP1-12のnamed testで検証し、P1-11の`PublicSessionView`やBrowser DOMはこのtestへ持ち込まない。P1-08ではcore response bundleがpublication入力を欠かず、scenario outcomeが未接続時に`None`であることだけを検証する。
 
 **テストファースト**
 
@@ -4834,6 +4940,7 @@ feat: Phase 1のplayable session UIとreload復元を実装する
 - `tests/test_repository_contracts.py`
 
 P1-11のproduction manifest追加は`src/neontof/web/__init__.py`、`src/neontof/web/contracts.py`、`src/neontof/web/routes.py`、`src/neontof/web/streaming.py`、`src/neontof/web/response_serializer.py`、`src/neontof/application/runtime.py`、`src/neontof/application/public_view.py`、`src/neontof/application/narrative_audit.py`の8つである。P1-11はResponseSerializerをwireするだけで、`EventStore.append()`と`TurnRequestStore.complete()`のcallerにならない。
+P1-11は`PublicContext`、`PublicProjection`、resource/location/clock projection、`PublicStaticData`、`ScenarioOutcome`を`src/neontof/model/gateway_models.py`から、`ApplicationRegistry`とEvent-derived selectorを`src/neontof/application/context_builder.py`からimportする。P1-11側で公開契約型やselectorを再定義しない。
 **公開型とシグネチャ**
 
 ```python
@@ -4881,7 +4988,19 @@ from neontof.application.turn_responses import (
     TurnResponseDocument,
     UndoResponseDocumentBuilder,
 )
-from neontof.application.context_builder import ScenarioOutcome, select_public_target_and_conditions
+from neontof.application.context_builder import (
+    ApplicationRegistry,
+    select_public_target_and_conditions,
+    select_scenario_outcome,
+)
+from neontof.model.gateway_models import (
+    PublicClockProjection,
+    PublicContext,
+    PublicProjection,
+    PublicResourceProjection,
+    PublicStaticData,
+    ScenarioOutcome,
+)
 from neontof.rules.minimal_2d6 import StatusCondition, TargetNumber
 from neontof.contracts.transport import (
     DoneFrame,
@@ -5113,7 +5232,7 @@ P1-11のcomposition rootはP1-12の`ScenarioRuntime`作成・serial `turn_engine
 これによりRoadmapが要求するDice/Rulingの最小結果は、P1-04のdeterministic `DiceResult` / `TargetNumber` / `StatusCondition`、P1-08のvalidated `FactAsserted` / `FactSuperseded`とreplay、P1-11の`PublicSessionView` / `TurnResponseDocument` / Browser DOMという一方向の経路で公開される。`scenario_outcome`も既存FactAssertedのreplayed `ScenarioOutcomeFact`として同じEvent authority経路を通る。PublicFactを直接wireせず、`PublicDiceView`へtarget/conditions/outcomeを混ぜない。
 `make_response_serializer(*, public_static_data: PublicStaticData, encode_buffered_document: Callable[[BufferedTurnResponse], StrictBytes], encode_sse_document: Callable[[BufferedTurnResponse], StrictBytes]) -> ResponseSerializer`はP1-11の`src/neontof/web/response_serializer.py`だけが実装し、`ResponseSerializer = Callable[[TurnResponseDocument, RequestedMediaType], StrictBytes]`をHTTP adapterへwireする。serializerはP1-08のtyped `TurnResponseDocument`と`RequestedMediaType`を受け、documentの`public_projection`、`resource_projection`、`dice_projection` / `dice_result`、`narrative`、`suggested_actions`、`cost_microusd`、`processing_status`、`corrections`、`target_number`、`conditions`、`scenario_outcome`を用いて`build_public_session_presentation(response_document=document, suggested_actions=document.suggested_actions, cost_microusd=document.cost_microusd, processing_status=document.processing_status)`、`build_public_session_view(..., public_static_data=public_static_data, presentation=presentation)`、`StateFrame`、buffered responseを順に作り、`encode_buffered_document(buffered_response)`または`encode_sse_document(buffered_response)`から指定mediaのnon-empty strict UTF-8 `StrictBytes`を返す。serializerはEventStore、TurnRequestStore、coordinator、lock、recoveryを参照せず、ResponseRebuilderを実行しない。`CachedTurnResponse.body`と`complete()`前のbodyは同じstrict UTF-8 / non-empty / requested media contractでCoordinatorとStoreが検証し、invalid bytesは`StoreError(code="invalid_response")`としてcompleteせずprocessingを保持する。P1-11のroute / serializerは`EventStore.append()`、`TurnRequestStore.claim()`、`TurnRequestStore.stage()`、`TurnRequestStore.complete()`を直接呼ばず、ResponseRebuilderを実行しない。ResponseRebuilderを構築するのは`src/neontof/app.py`のcomposition rootだけであり、P1-11はその完成済みrebuilderをcoordinatorへ注入する。normal/recoveryのResponseRebuilderがこのserializerでbody bytesとStateFrameを確定した後にだけCoordinatorが`complete()`し、routeはcache済みbodyをforwardして再serializeしない。`ApplicationRuntime.server_clock: Callable[[], int]`はUTC epoch secondsを返し、HTTP undo routeだけがこれを`OccurredAt`へ変換する。`build_undo_command()`の順序はrequired `Idempotency-Key`のsafe parse → UTC seconds `runtime.server_clock` → `UndoCommand` → `runtime.turn_engine.undo_latest()` → coordinatorで固定する。turn routeのregistry miss + `ExistingProcessingClaim`は`TurnLifecycleCoordinator.execute()`内の同じboundary lockで`RecoveryPlan`を受け、planのoptional candidateをexecuteの既存append callsiteで処理した後にcoordinator-only rebuild/completeへ進む。route / serializerは`recover_processing()`を直接実行せず、EventStore appendとTurnRequestStore completeのcallerにもならない。
 
-reloadでは`EventStore.read_campaign(campaign_id)`でcampaign全体を検証してから、Event Logを同じ順序でreplayし、`PublicProjection`、`PublicResourceProjection`、`DiceProjection`、`PublicSessionView`のevent-derived subsetを再構築する。対象clockのEvent-derived rowが無い場合は`PublicStaticData.clock_initial`、rowがある場合はreplay currentを使い、静的定義とEvent-derived currentを二重のauthorityにしない。`PublicSessionPresentation`が渡されない場合は前項のtyped defaultを使い、Event Logにないpresentation fieldsを推測しない。`test_reload_rebuilds_event_derived_public_session_subset_from_event_log`はprojection snapshotとcacheを削除した後でも、Eventだけからcampaign/session/scene/turn、location、HP、Resource、target_number、conditions、`scenario_outcome`、Clock（initial `0`の空Projection rowを含む）、Diceのsubsetが一致し、narrative、suggested_actions、cost、processing status、correctionsのfull view equalityを要求しないことをfocusedに確認する。
+reloadでは`EventStore.read_campaign(campaign_id)`でcampaign全体を検証してから、同じ順序の全validated `tuple[DomainEvent, ...]`を再生する。そこから`Projection`、`PublicProjection`、`PublicResourceProjection`、`DiceProjection`を一組で再構築し、full event tupleとrebuild済みProjection組をP1-07/P1-08のcontext・response builderへ渡してから、P1-11の`PublicSessionView`を組み立てる。通常response rebuildとreloadは同じcampaign全体のEvent列を入力にし、filtered tuple、snapshot、observation、coordination recordを代替入力にしない。対象clockのEvent-derived rowが無い場合は`PublicStaticData.clock_initial`、rowがある場合はreplay currentを使い、静的定義とEvent-derived currentを二重のauthorityにしない。`PublicSessionPresentation`が渡されない場合は前項のtyped defaultを使い、Event Logにないpresentation fieldsを推測しない。公開Projectionの`turn_id`と`turn_request_id`は同じcampaign/sessionの最後の公開`PlayerInputAcceptedEvent`から対で復元し、coordination recordや現在呼出しのIDを補わない。`test_reload_rebuilds_event_derived_public_session_subset_from_event_log`はprojection snapshotとcacheを削除した後でも、Eventだけからcampaign/session/scene/turn、location、HP、Resource、target_number、conditions、`scenario_outcome`、Clock（initial `0`の空Projection rowを含む）、Diceのsubsetが一致し、narrative、suggested_actions、cost、processing status、correctionsのfull view equalityを要求しないことをfocusedに確認する。
 
 `PublicSessionPresentation`、`PublicProcessingStatus`、`NonNegativeMicrousd`、`build_public_session_presentation()`、`PublicSessionView`、`build_public_session_view()`のowner pathは`src/neontof/application/public_view.py`に固定する。`build_public_session_presentation(*, response_document: TurnResponseDocument, suggested_actions: tuple[StrictStr, ...], cost_microusd: NonNegativeMicrousd, processing_status: PublicProcessingStatus) -> PublicSessionPresentation`は、validated `TurnResponseDocument.narrative` / `corrections`と、HTTPへ渡すtyped `suggested_actions` / `cost_microusd` / `processing_status`だけからpresentationを作る。raw provider response、secret、full Projectionをこの入力へ渡さない。HTTP application pathはresponse document → `build_public_session_presentation(...)` → `build_public_session_view(..., presentation=presentation)`の順で呼び、`PublicSessionView`のpresentation fieldsをbuilderの隠れたglobalやEvent Log推測で埋めない。`processing_status`は`PublicProcessingStatus`のclosed literal、`cost_microusd`は`NonNegativeMicrousd`のstrict nonnegative integerである。
 
@@ -5750,10 +5869,14 @@ Stagingはcommitごとに許可pathを明示列挙する。`git add .`と`git ad
 
 # 12. コミット境界の概要
 
+残作業の実行単位と依存順は[Phase 1残作業の再分割とLocal Gateway実装計画](./phase-01-remaining-roadmap.md)を参照する。この文書の既存WP section、個別の計画・レビュー・テスト設計・途中RED commitの記述は、契約と完了履歴を確認するために保持する。残作業を一つのcycleへ区切る方法、再分割後の順序、各cycleの着手・完了条件は新ロードマップを優先し、既存の個別工程記述で上書きしない。Phase 1上位Gateの条件は変更しない。
+
+Context/Gatewayの境界は、P1-06 Local Gatewayが公開Context、player input、Diceを完全な`ProviderRequest` envelopeへ写し、P0 invocationへ情報を落とさないこと、`GatewayRequest.turn_id`を現在呼出しのメタデータとして受け、`PublicProjection.turn_id`から取得しないこと、`GatewayFailure.attempts`をbudget超過`0`・その他`1`へ固定することである。P1-07の純粋な公開型は`gateway_models.py`、`ApplicationRegistry`・builder・selector・Entity解決は`context_builder.py`が所有する。`build_context()`は全campaign Event列を受け、`rebuild_projection(campaign_events) == projection`を検証してから、最後の公開`PlayerInputAcceptedEvent`の`turn_id`と`payload.turn_request_id`を対で公開Contextへ写す。coordination record、request row、未appendの現在Turn IDはこの境界の根拠にしない。
+
 P1-03 Lifecycleの`RecoveryPlan`は`turn_models.py`でstageし、`TurnLifecycleCoordinator.recover_processing(*, record: ProcessingTurnRequestRecord, campaign_events: tuple[DomainEvent, ...]) -> RecoveryPlan`をmetadata CASとrecovery decision/batch preparationだけのmethodとして固定する。recovery candidateのvalidation、EventStore append、全Event reread/select、Coordinator-only `ResponseRebuilder`、strict response validation、`TurnRequestStore.complete()`はすべて`execute()`の既存唯一callsiteが順に担い、`recover_processing`内にappend/rebuild/completeを置かない。P1-03のapplication append callerは`execute()`と`revert_latest()`の2件、P1-05後は`append_bootstrap()`を加えた3件のままとする。`RecoveryEventMetadata`、SQL、record、state tableはnormal `aborted_event_id`とrecovery `recovery_aborted_event_id`を分離した6個のEvent ID shapeを共有し、`owned_suffix` actual Event Log membershipをpayload選択の権威（prefixは以前の履歴でありcurrent requestのowned Eventではない）とする。予約IDとactual Eventの関係はrole-aware subsetとし、未使用予約IDの不在を許可する。表のnormal初回はappend / rebuild / complete = `1 / 1 / 1`、normal committed / normal aborted / awaiting_playerのappend後complete前再試行は各`0 / 1 / 1`、recovery abortの初回は`1 / 1 / 1`、recovery abort append後の再試行は`0 / 1 / 1`で、全てそのexecute呼出し内の回数として検証する。 `ExistingActiveTurn` fast pathだけはclaimなし、その他の`execute()`はdurable claim一回であり、registry missのrecoveryも同じexecute append/rebuild/complete順を使う。 `base_event_sequence`から`prefix = {event | event.sequence <= record.base_event_sequence}`と`owned_suffix = {event | event.sequence > record.base_event_sequence}`を分け、originはcurrent identityに一致するprefixからoriginを、current identityに一致するowned_suffix（authorized candidateを含む）からcurrent owned ID/stateとrole-aware actual membershipを導く。`select_response_payload()`がpayloadの唯一authorityであり、以前のTurnをcurrent requestへ再利用しない。 Normal `TurnEventBatchFactory`は`Callable[[TurnRequestIdentity, PreparedTurn, tuple[DomainEvent, ...], OccurredAt, Sequence[EventId]], tuple[TurnEventMetadata, RecoveryEventMetadata, EventBatch]]`としてcampaign全体のvalidated tupleを明示的に受け、NewClaim後の`EventStore.read_campaign(record.campaign_id)` readをfactoryへ渡す。factory用readとclaim transaction内のsame-connection readを混同せず、normal factoryはEventStoreをcaptureしない。current-submit（current identity一致のprefixにacceptedなし・owned_suffixにaccepted/terminalなし） recoveryだけが`PlayerInputAccepted -> recovery TurnAborted`、current-resume（current identity一致のprefixにaccepted/awaitingあり・owned_suffixにTurnResumed/terminalなし） recoveryはrecovery `TurnAborted`だけとする。metadata未確定のfaultなし継続は同一executeで`1 / 1 / 1`、CAS後append前のpartial failed attemptは`0 / 0 / 0`、次回recovery abortとappend後complete前retryは表の回数を使う。
 Recovery payloadの選択は`select_response_payload()`だけが行う。normal `committed` / normal `aborted` actualはversion 2のcanonical outer `StagedRecoveryPayload` bytes（内側は`StagedResponseSeed`）を必須とし、version 1 / initialのみで完了する経路を作らない。awaiting actualはv2 staged outer payloadを優先し、無い場合だけv1 initial outer bytes + P1-08適用のtyped presentation defaultを使い、recovery-aborted actualはrecord versionに関係なく保存済みversion 1のinitial payloadを使う。P1-08の`StagedResponseSeed`は`narrative`、`suggested_actions`、`cost_microusd`、`processing_status`、`corrections`、必要時の公開済みtyped semantic dataとidentity/media bindingだけを持ち、Event-derived Projection/status/diceを重複保存しない。claim前のinitial builder一回はNewClaimのseedにだけ採用し、Existing claim / claim後 / recovery内では保存bytesを再利用して再生成しない。
 
-各WP sectionの`コミット境界`が、Test FirstのRED→最小GREENのfocused command、full-green条件、明示的な`git add -- <path...>`を定義する唯一の着地点表である。下記の順序はcommit message順の要約であり、`tests/test_repository_contracts.py`をModifyするWPはmanifest serialization laneの順序を守る。P1-00、P1-00b、P1-01a、P1-01b、P1-02は完了済みであり、現在の次の着地点はP1-02直後のP1-01c scanner-hardening補正である。P1-10aとP1-01c以降の非共有path作業は、依存とmanifest serializationを壊さない範囲でのみ並列可能とし、共有manifest pathを同時にstageしない。
+各WP sectionの`コミット境界`は、既存契約と完了履歴を確認するためのTest FirstのRED→最小GREEN、focused command、full-green条件、明示的な`git add -- <path...>`を記録する。残作業の実行単位・依存順・着手条件は[Phase 1残作業の再分割とLocal Gateway実装計画](./phase-01-remaining-roadmap.md)を正本とし、下記の既存commit message順はそのロードマップを上書きしない。`tests/test_repository_contracts.py`をModifyするWPは新ロードマップでもmanifest serialization laneの順序を守る。P1-00、P1-00b、P1-01a、P1-01b、P1-02は完了済みであり、その完了履歴は変更しない。P1-10aとP1-01c以降の非共有path作業は、依存とmanifest serializationを壊さない範囲でのみ並列可能とし、共有manifest pathを同時にstageしない。
 P1-03 Lifecycle commitの`turn_models.py` stage listには、Persistence laneの型とは別にLifecycleの型/alias `RecoveryEventRole`、`RecoveryEventIdReservation`、`RecoveryMetadataInputs`、`RecoveryEventIdDeriver`、`RecoveryEventIdSource`、`RecoveryMetadataFactory`を必ず含める。`derive_recovery_event_id`、`reserve_recovery_event_ids`、`build_recovery_metadata`の具体関数は`src/neontof/application/turn_lifecycle.py`だけが実装し、Lifecycle commitの`turn_lifecycle.py` stage listへ含める。P1-11はこのconcrete `reserve_recovery_event_ids`と`build_recovery_metadata`をexact importしてproduction coordinatorへ注入し、`compose_application_runtime(...)`へ外部source/factory引数を追加しない。
 
 Persistence migrationの対応は、P1-01a=`0001_event_store.sql`（`schema_migrations`/`events`のみ、schema-set最大version `1`）、P1-01b=`0002_projection_snapshots.sql`（最大version `2`）、P1-02=`0003_observation_stores.sql`（最大version `3`）、P1-03=`0004_turn_requests.sql`（最大version `4`）とする。各WPのfocused RED/GREEN command、schema-setの連番・未知versionなし・raw SQL bytes checksum evidence、SQLを含む明示的な`git add -- <path...>`は各WP sectionに定義し、全migrationをadditive、down migrationなし、P1-01aは後続tableなしとする。P1-01aのmigrationだけは`SqliteDatabase.migrate()`を唯一のpublic mutation entryとし、private `_run_migrations`が`BEGIN IMMEDIATE`後のdedicated read source、bounded copy/verification、同一basename artifact set、DDL、schema row insert、COMMITを固定順で担う。P1-01a、P1-01b、P1-02、P1-03、P1-04、P1-05、P1-06、P1-07、P1-08、P1-09、P1-11、P1-12のRED/GREEN focused commandは、各WPの既存focused testと`tests/test_repository_contracts.py`を同じpytest invocationへ含める。
@@ -5804,6 +5927,10 @@ P1-03/P1-08のnormal preparationは、NewClaim直後の同じ`event_boundary_loc
 §12の型・composition・replay要約は、P1-08 `src/neontof/application/turn_responses.py`が`InitialRecoveryPayload` / `StagedResponseSeed` / `StagedRecoveryPayload` / `RecoveryPayload`と、`encode_staged_response_seed` / `decode_staged_response_seed`を含むcodec/builderを所有し、claim前のinitial bytesはNewClaimだけがseedとして採用し、ExistingProcessing/ExistingFinalとrecoveryは保存bytesだけを使うことを含む。normal committed / normal abortedはv2 staged outer payloadを必須とし、awaitingはv2 staged outer payloadまたはv1 initial outer bytes + P1-08適用のtyped default、recovery-abortedはrecord versionに関係なくv1 initialを選ぶ。P1-07のvalidated `ScenarioOutcomeFact`、P1-12のpre-ID `scenario_outcome` FactAsserted candidate、P1-08の`TurnResponseDocument.scenario_outcome`、P1-11のPython/TypeScript `PublicSessionView.scenario_outcome`、P1-13のreplayed outcome assertionは同じEvent authority経路を使う。`ScenarioRuntime` / `TurnEngine`はEventBatchを返さず、non-NULL `scenario_end`時のSessionEndedは`TurnEventBatchFactory`だけが`TurnCommitted -> SessionEnded(reason="completed")`として構成する。P1-08 focused testは`scenario_outcome=None`のcore typed response bundleまで、実ScenarioRuntimeのoutcome candidate / append / replayはP1-12、P1-11がview/JSON/DOM、P1-13が全WPのcomplete-runを担当する。
 
 # 13. 最終Gate判定
+
+最終Gateに至る残作業の実行単位は[Phase 1残作業の再分割とLocal Gateway実装計画](./phase-01-remaining-roadmap.md)の依存順で進める。以下のPhase 1上位Gate、C-02/C-03/provider approval、remote CI、playtestの判定条件は変更せず、各cycleのfocused Gateが上位条件を満たす証跡になるようにする。
+
+P1-06〜P1-08の契約確認では、Local Gatewayが完全な`ProviderRequest` envelopeを受け、`GatewayRequest.turn_id`を`PublicProjection.turn_id`から流用せず、`GatewayFailure.attempts`をbudget超過`0`・その他`1`として扱うことを確認する。P1-07の純粋な公開型は`gateway_models.py`、`ApplicationRegistry`・builder・selector・Entity解決は`context_builder.py`に分かれ、`build_context()`は全campaign Event列と既存`projection`の一致を検証してから公開Contextを作る。P1-08のprepare、append後response rebuild、P1-11のreloadは、同じ全validated Event tupleとrebuild済み`Projection` / `PublicProjection` / `PublicResourceProjection` / `DiceProjection`を使い、公開IDは最後の公開`PlayerInputAcceptedEvent`の`turn_id`と`payload.turn_request_id`の対だけから復元する。coordination record、request row、未appendの現在Turn IDは公開Projectionの根拠にしない。
 
 P1-03 Gateでは、registry missの`ExistingProcessingClaim`が同じ`event_boundary_lock`内で`recover_processing(*, record: ProcessingTurnRequestRecord, campaign_events: tuple[DomainEvent, ...]) -> RecoveryPlan`へ入り、metadata未確定時の一度のCASとdecision/batch preparationだけを行うことを確認する。optional candidate validation、EventStore append、campaign全体の再read/select、Coordinator-only `ResponseRebuilder`一回、strict response validation、`TurnRequestStore.complete()`一回はexecuteの既存唯一callsiteで行う。P1-03のcaller数は`execute()` / `revert_latest()`の2件、P1-05後は`append_bootstrap()`を加えた3件であり、`RecoveryEventMetadata`の6個のIDはcurrent identity一致の`owned_suffix`にあるactual Event Logへrole別に照合し、未使用予約IDの不在を許可する。 `ExistingActiveTurn` fast path以外の各`execute()`呼出しは同じboundary lock内のdurable claimを正確に一回だけ行い、`ExistingProcessingClaim`はINSERT `0`・保存base不変のまま`recover_processing()`へ渡され、`recover_processing()`自身はclaimを呼ばない。
 
