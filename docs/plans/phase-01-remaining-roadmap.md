@@ -239,17 +239,100 @@ feat: 公開入力とDiceを受け取るLocal Gatewayを追加する
 
 ## 2. Real Provider（旧P1-06の残部）
 
-### 承認前
+### 目的と固定候補
 
-Local Gatewayが受け取る完全な`ProviderRequest`を、Fake/Recordedと交換可能な一つの具体的な実Providerへ渡す。依存はLocal Gatewayのcommitである。provider approval前のwrite pathは空とし、SDK dependency、key reader、external HTTP call、実Provider adapter、実Provider testを作らない。
+Local Gatewayが受け取る完全な`ProviderRequest`を、Fake / Recordedと交換可能な一つの具体的なReal Providerへ渡す。接続方式はAPIだけに限定せずCLIを許容し、最初のadapter候補はCodex CLI `0.153.3`と`gpt-5.3-codex-spark`とする。Claude CLI/API（中国モデルを含む）は将来候補として残すが、今回第二Provider、registry、Plugin、汎用化は作らない。
 
-approvalでは、Provider名、SDK名とversionまたはHTTP clientを使う根拠、API key source、想定costとsession budget、network destinationとdata visibility、timeout、通常Turnのinvocation上限`1`、timeout/error時のretry `0`を明示する。API keyはBrowser、通常log、prompt、fixture、responseへ渡さない。承認内容が既存契約やこの計画のsignatureを変える場合は、実装せず上位判断を求める。
+P0の`ModelResponse`と公開`ProviderRequest`は変更しない。Providerへ渡すのは完全envelope内の公開Context、player input、公開Dice、call metadataだけであり、`campaign_seed`、`derived_seed`、API keyその他の秘密は渡さない。Provider共通型は次の最小契約だけを候補とし、既存の`GatewayFixtureProvider`とReal Provider adapterで共有する。
 
-### 承認後の一サイクル
+```python
+class GatewayProvider(Protocol):
+    def invoke(
+        self,
+        request: ProviderRequest,
+        *,
+        timeout_seconds: float,
+    ) -> ModelResponse: ...
+```
 
-承認後に初めて、承認されたexact adapter path、test path、dependency path、staging pathを確定する。adapterはLocal Gatewayと同じ完全envelopeを受け、公開情報だけをProviderへ渡し、承認済みの費用・destination・timeout・retry契約を検証する。pathが未確定のまま作業を始めない。承認済みpathだけを一つのlogical GREEN commitへstageする。
+`ModelGateway`のproviderは`GatewayProvider`、budgetは`SessionBudget | SubscriptionBudget`へ限定して拡張する。`SubscriptionBudget`は`campaign_id`、`session_id`、`limit_calls=10`、`max_attempts=1`だけを持ち、金額単価0による無制限扱いを許さない。`cost_microusd`は追加従量課金であり、月額料金や契約枠消費とは別に扱う。追加課金0を確認できたsubscriptionだけ既存の整数`0`を使い、既存の成功Telemetry、SQL、金額sum型は変えない。追加課金、credit消費、自動fallbackが生じる場合は停止する。アプリの通常defaultは10 callsであり、実装前CLI調査に使うユーザー承認済みsubscription調査回数とは別である。調査ごとの再承認は要求しない。
 
-このフェーズのriskは高い。Real Provider commit後に初めて旧P1-06全体を完了扱いにできるが、Fake/Recordedのlocal validationはapproval前後を通して独立に継続できる。承認前に停止した場合はLocal Gatewayのcommitを保持し、外部通信へfallbackしない。
+### 呼出し境界、予約、CLI実証
+
+provider呼出し前に、既存の`ObservationStore`へ一回分のsubscription callを原子的に予約する。候補APIのsignatureは次のとおりである。
+
+```python
+def try_reserve_subscription_call(
+    self,
+    campaign_id: CampaignId,
+    session_id: SessionId,
+    model_call_id: ModelCallId,
+    limit_calls: int,
+) -> bool: ...
+
+def session_subscription_call_count(
+    self,
+    campaign_id: CampaignId,
+    session_id: SessionId,
+) -> int: ...
+```
+
+`try_reserve_subscription_call()`は既存の`session_cost_microusd(campaign_id, session_id)`と同じcampaign/session scopeで使用済み件数を確認し、上限未満なら現在の`model_call_id`を含む一枠を永続化して`True`、上限到達なら変更せず`False`を返す。`False`のときはproviderを呼ばない。同じ`ModelCallId`の実再呼出しも新しい一枠として数え、idempotent予約にしない。`session_subscription_call_count()`はcampaign/session単位の常に0以上の`int`を返す。check+insertはEvent transaction外の短い一つのSQLite transactionで行い、既存single-writer / `ObservationStore`の所有境界を守る。別connection/別DBは導入せず、失敗、timeout、session再起動でも予約を戻さない。予約tableは新規`0005_subscription_call_budget.sql`でCREATEだけを行い、既存migrationは変更しない。Transcript / Telemetryと同じ観測境界で失敗Turnの予約・費用を保持する。
+
+Codex CLI候補はアプリケーションがshellを介さず公開promptをstdinへ渡し、CLI管理の認証だけを使う。アプリケーションは`auth.json`を読まず、API keyをBrowser、通常log、prompt、fixture、responseへ渡さない。次は実証対象の起動条件候補であり、未確認のoptionや設定を確定契約として扱わない。
+
+```text
+codex exec --ignore-user-config --ephemeral --json --output-schema ... --sandbox read-only --skip-git-repo-check
+model: gpt-5.3-codex-spark
+reasoning: low
+application timeout: 60 seconds
+retry: 0
+destination: https://chatgpt.com/backend-api/codex/responses
+```
+
+送信先にはChatGPTのデータ設定を適用する。`--sandbox read-only`で読取toolを消せるか、`--ignore-user-config`でAGENTS、skills、MCP、hookを全て消せるか、built-in OpenAI providerのretry設定をoverrideできるかは未確認である。CLI process一回をmodel invocation一回と数えない。wrapper mock、JSONL turn event数、subprocess起動回数だけでは合格にしない。
+
+実装前CLI実証は、ユーザーが承認済みのsubscription利用範囲で、秘密を含まない人工公開TRPG入力をCLIへ直接渡して行う。未実装の`SubscriptionBudget`、`0005_subscription_call_budget.sql`、ObservationStore予約APIは使わない。入口は、同じCLI version・起動条件について、CLI自身が受理した有効prompt/tool定義、実際に適用されたretry設定と起動コード、実通信のmodel request数とtimeout/model error時の失敗挙動を示す証跡である。少なくとも`全tool排除`、`非公開混入なし`、`モデル生成request=1`、`timeout/errorでもretry=0`を同じ条件で示せなければ、実装待機のままとする。未確認の設定や技術を確定条件として追記しない。
+
+実装後アプリsmokeはCLI実証と分離する。初回smokeだけは`SubscriptionBudget(limit_calls=1)`を使い、最初の予約成功、失敗/timeout後の予約保持、DB/session再起動後の上限保持、上限到達時の変更なし・provider呼出しなしを確認する。Fake / Recorded / CIはAPI keyや外部networkを必須にしない。
+
+### 一サイクルのpath、test、Gate
+
+実装後のDoneに置くtestは次の5名だけとする。最初の3件はCLI実証とadapter境界、4件目と5件目はアプリsmoke/migrationを検証する。既存Local Gatewayのtest契約は変更しない。
+
+- `test_codex_envelope_excludes_secrets_and_seeds`
+- `test_codex_prompt_and_tools_are_isolated`
+- `test_codex_single_invocation_and_no_retry`
+- `test_subscription_limit_survives_failure_and_restart`
+- `test_subscription_migration_preserves_existing_observations`
+
+候補pathは次の12個である。この一覧は実装候補であり、アプリ実装・test・dependencyの着手許可ではない。Python依存は追加しない。
+
+- `docs/plans/phase-01-first-playable-local-web-slice.md`
+- `docs/plans/phase-01-remaining-roadmap.md`
+- `src/neontof/model/gateway_models.py`
+- `src/neontof/model/gateway.py`
+- `src/neontof/model/codex_cli_provider.py`
+- `src/neontof/persistence/observation_store.py`
+- `src/neontof/persistence/migrations/0005_subscription_call_budget.sql`
+- `tests/model_gateway/test_codex_cli_provider.py`
+- `tests/model_gateway/test_gateway_budget.py`
+- `tests/persistence/test_observation_store.py`
+- `tests/persistence/test_migrations.py`
+- `tests/test_repository_contracts.py`
+
+候補pathは承認済みの実adapter code pathではない。exact adapter code path、依存、test path、staging範囲のapprovalは未取得であり、実装cycle開始時に確定する。実装前CLI実証で一回invocation・retryなしを証明できない、または既知未確認点が残る場合はadapter、test、migrationを作らない。Real Providerはこの一サイクルで完了させ、入れ子phaseを作らない。実装cycleのGateは次のfocused pytestと既存のcompileall、ruff、mypy、full pytestである。
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/model_gateway tests/persistence/test_observation_store.py tests/persistence/test_migrations.py tests/test_repository_contracts.py
+.\.venv\Scripts\python.exe -m compileall -q src
+.\.venv\Scripts\python.exe -m ruff format --check src tests
+.\.venv\Scripts\python.exe -m ruff check src tests
+.\.venv\Scripts\python.exe -m mypy --strict src tests --exclude tests/typecheck_fixtures
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+この計画段階では新しいtestを作成・実行しない。Real Provider commit後に初めて旧P1-06全体を完了扱いにする。Local Gatewayの完了契約と次のPublic Context変更は維持する。
 
 ## 3. Public Context（旧P1-07）
 

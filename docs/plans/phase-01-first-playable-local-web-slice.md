@@ -1521,9 +1521,23 @@ class ObservationStore:
         turn_id: TurnId | None = None,
     ) -> tuple[TelemetryRecord, ...]: ...
     def session_cost_microusd(self, campaign_id: CampaignId, session_id: SessionId) -> int: ...
+    def try_reserve_subscription_call(
+        self,
+        campaign_id: CampaignId,
+        session_id: SessionId,
+        model_call_id: ModelCallId,
+        limit_calls: int,
+    ) -> bool: ...
+    def session_subscription_call_count(
+        self,
+        campaign_id: CampaignId,
+        session_id: SessionId,
+    ) -> int: ...
 ```
 
 `ObservationStore`へ渡すdataは、TranscriptKind/Telemetry statusごとのpurpose-specific allowlistから組み立てる。raw provider body、raw provider error、exception cause、prompt、API keyは保存対象にしない。invalid response/errorは安全なerror code、digest、byte lengthなど許可された要約だけを保存する。`sanitize_observation()`のrecursive key redaction（`api_key`、`authorization`、`token`、`secret`）は最終防御であり、raw dataを受け入れる主境界にはしない。
+
+`try_reserve_subscription_call()`は既存の`session_cost_microusd(campaign_id, session_id)`と同じcampaign/session scopeで予約済み件数を確認し、`limit_calls`未満なら現在の`model_call_id`を含む1枠を永続化して`True`、上限到達なら変更せず`False`を返す。`False`のときはproviderを呼ばない。同じ`ModelCallId`の実再呼出しも新しい1枠として数え、予約をidempotentにしない。`session_subscription_call_count()`は同じcampaign/sessionの使用済み回数を常に0以上の`int`で返す。check+insertはEvent transaction外の短い一つのSQLite transactionで、既存のsingle-writerと`ObservationStore`の所有境界内で行い、別connection/別DBを追加しない。予約は失敗、timeout、session再起動でも戻さない。
 
 `0003_observation_stores.sql`の`transcript_entries`と`telemetry_entries`は、それぞれ独立したtable-local `append_sequence`を持ち、二表横断のglobal sequence allocatorを作らない。`ObservationStore.append_transcript()`と`append_telemetry()`はEvent Log appendとは別のwrite transactionで、自分のobservation tableだけを書き込む。Event append critical sectionの内側からObservationStore appendを呼ばず、同じDBのsingle writer lockをnested acquireしない。Turn pipelineの実行順は`player_input observation → model observations → Event append`とし、各observation appendはEvent appendの外側の別`_write`/connection/transactionで行う。Event appendがrollbackしてEventが0件でも、先行したTranscript/Telemetryとcostは保持し、`TurnReverted`で消さない。`EventStore.append()`、`TurnRequestStore`、Observation Storeのownershipを混ぜない。
 
@@ -3700,32 +3714,94 @@ C-03は、P0の`ModelRequest`、`model_invoker.py`、`fake_provider.py`、`recor
 
 C-03のenvelope方式とLocal Gatewayは今回の承認範囲で実装できる。実Providerの名前、SDKまたはHTTP client、API key source、cost、network destination、data visibility、timeout/error時のretryは別のprovider approvalで確定し、その承認前に実Provider adapter、SDK dependency、key reader、external HTTP call、実Provider testを追加しない。実ProviderはFake/Recordedと同じ完全envelopeを受け取る一つのadapterとして、exact path、signature、dependency、test path、git add pathを承認後に定める。
 
-### Provider選定とapproval停止点（必須）
+### Real Provider cycle — Codex CLI候補とSubscriptionBudget
 
-Roadmap P1-06の成果物は、Fake / Recorded Fixtureと交換可能な**一つの具体的な実Provider adapter**である。Fake-onlyではP1-06またはPhase 1を完了扱いにしない。
+P1-06のReal Provider成果物は、Local Gatewayの完全な`ProviderRequest`を受け取り、Fake / Recorded Fixtureと交換可能な一つの具体的なadapterである。接続方式はAPIだけに限定せずCLIを許容する。最初のadapter候補はCodex CLI `0.153.3`と`gpt-5.3-codex-spark`とする。Claude CLI/API（中国モデルを含む）は将来の選定候補として残すが、今回第二Provider、Provider registry、Plugin、汎用registryを作らない。
 
-先に確定済みC-03 envelope方式でLocal Gateway、budget、security、`max_attempts=1`、runtime testをAPI keyなし・external networkなしで実装し、normal invocation `1`、zero retry、完全envelope照合の条件でGREENを確認する。Fake/Recordedのlocal validationはprovider approvalから独立して進められる。実Providerはその後の別承認フェーズでのみ実装し、P1-06全体とPhase 1の上位Gateは、実Provider adapterが存在するまで完了扱いにしない。
+P0の`ModelResponse`と、この計画で定めた`ProviderRequest`の公開契約は変更しない。Providerへ渡すのは完全envelope内の公開Context、player input、公開Dice、call metadataだけであり、`campaign_seed`、`derived_seed`、API keyその他の秘密は渡さない。Providerの共通型は次の最小契約だけを候補とし、`GatewayFixtureProvider`とCodex CLI adapterの両方が実装する。追加のcapability、registry、fallback abstractionは作らない。
 
-1. concrete Provider名
-2. SDK名とversion、またはHTTP clientを使う場合の根拠
-3. API key source（Browser、通常ログ、prompt、fixture、responseへ渡さないことを含む）
-4. 想定costとsession budget
-5. network destinationとdata visibility
-6. 通常Turnの最大provider invocation数（`1`）とtimeout/error時のretry数（`0`）
-
-provider approval前はSDK dependency、key reader、external HTTP call、concrete real Provider adapter、実Provider testを追加しない。provider approval後も、C-03で承認されたexact path/signature/dependency/test path/git add pathがこの計画・実装・検証へ反映されるまで実装しない。承認内容が既存契約またはこのplanの署名を変える場合は、実装せず上位文書の判断を求める。Fake / Recordedのlocal testはAPI key/networkなしでC-03 contract approval後に実行でき、provider approval前も継続してよい。C-03とprovider approvalの選択に対応しないconcrete real Provider adapterのGREEN/commitやPhase 1 completionは認めない。
-
-**コミット境界**
-
-```powershell
-git add -- src/neontof/model/gateway_models.py src/neontof/model/gateway.py tests/model_gateway/test_gateway_budget.py tests/model_gateway/test_gateway_retry.py tests/model_gateway/test_gateway_security.py tests/model_gateway/test_gateway_fake_provider.py tests/test_repository_contracts.py
+```python
+class GatewayProvider(Protocol):
+    def invoke(
+        self,
+        request: ProviderRequest,
+        *,
+        timeout_seconds: float,
+    ) -> ModelResponse: ...
 ```
 
-Test Firstではtestsを先に作成・実行し、C-03承認後、上記pathのFake/Recorded testsとimplementationを一つのlogical GREEN commitへまとめる。Fake/Recorded GREEN、provider approval、C-03で承認されたexact pathの確定後に、real adapter/test pathを明示して別のlogical GREEN commitへまとめる。承認されていないpathのconcrete real Provider adapterはGREEN/commit扱いにしない。
+`ModelGateway`は既存のLocal Gateway挙動を維持したまま、providerとbudgetの型だけを次へ広げる候補とする。
+
+```python
+class ModelGateway:
+    def __init__(
+        self,
+        *,
+        provider: GatewayProvider,
+        observations: ObservationStore,
+        budget: SessionBudget | SubscriptionBudget,
+        timeout_seconds: float,
+    ) -> None: ...
+```
+
+`SubscriptionBudget`は`campaign_id`、`session_id`、`limit_calls=10`、`max_attempts=1`だけを持つ。金額単価を0にして無制限扱いにする実装は許可しない。`cost_microusd`は追加の従量課金として記録し、月額料金や契約枠の消費とは分離する。追加課金が0であることを確認できたsubscriptionだけ、既存の整数`0`をcostへ使う。既存の成功Telemetry、SQL、金額のsum型は変更しない。追加課金、credit消費、または自動fallbackが発生する場合は、実装へ進まず停止する。
+
+Subscription budgetでは、上記の`try_reserve_subscription_call()`をprovider呼出し前に使う。予約を成功TurnのEvent状態へ混ぜず、Transcript / Telemetryと同じ観測境界で保持する。予約tableは新規`0005_subscription_call_budget.sql`でCREATEだけを行い、既存migrationは変更しない。
+
+アプリの通常defaultは`SubscriptionBudget(limit_calls=10)`であり、実装前CLI調査でユーザーが承認済みのsubscription調査回数とは別である。調査ごとの再承認は要求しない。調査枠を未実装の`SubscriptionBudget`、migration、予約APIの証拠に使わない。
+
+Codex CLI候補は、アプリケーションがshellを介さず公開promptをstdinへ渡し、CLIが管理する認証だけを使う。`auth.json`をアプリケーションが読まず、API keyをBrowser、通常log、prompt、fixture、responseへ渡さない。次は実証対象の起動条件候補であり、未確認のoptionや設定を確定契約として扱わない。
 
 ```text
-feat: Model Gatewayの予算と安全なProvider境界を実装する
+codex exec --ignore-user-config --ephemeral --json --output-schema ... --sandbox read-only --skip-git-repo-check
+model: gpt-5.3-codex-spark
+reasoning: low
+application timeout: 60 seconds
+retry: 0
+destination: https://chatgpt.com/backend-api/codex/responses
 ```
+
+送信先にはChatGPTのデータ設定を適用する。`--sandbox read-only`で読取toolを消せるか、`--ignore-user-config`でAGENTS、skills、MCP、hookを全て消せるか、built-in OpenAI providerのretry設定をoverrideできるかは未確認である。CLI process一回をmodel invocation一回と同一視しない。wrapper mock、JSONL turn event数、subprocess起動回数だけでは合格にしない。
+
+実装前CLI実証は、ユーザーが承認済みのsubscription利用範囲で、秘密を含まない人工公開TRPG入力をCLIへ直接渡して行う。未実装の`SubscriptionBudget`、`0005_subscription_call_budget.sql`、`ObservationStore`予約APIは使わない。入口は、同じCLI version・起動条件について、CLI自身が受理した有効prompt/tool定義、実際に適用されたretry設定と起動コード、実通信のmodel request数とtimeout/model error時の失敗挙動を示す証跡である。少なくとも`全tool排除`、`非公開混入なし`、`モデル生成request=1`、`timeout/errorでもretry=0`を同じ条件で示せなければ、実装待機のままとする。未確認の設定や技術を確定条件として追記しない。
+
+実装後アプリsmokeはこのCLI実証と分離する。初回smokeだけは`SubscriptionBudget(limit_calls=1)`を使い、最初の予約成功、失敗/timeout後の予約保持、DB/session再起動後の上限保持、上限到達時の変更なし・provider呼出しなしを確認する。Fake / Recorded / CIは従来どおりAPI keyと外部networkを必要条件にしない。
+
+実装後のDoneに置くtestは次の5名だけとする。最初の3件はCLI実証とadapter境界、4件目と5件目はアプリsmoke/migrationを検証し、wrapper mockの呼出し回数だけでCLI内部のinvocation/retryを証明しない。
+
+- `test_codex_envelope_excludes_secrets_and_seeds`
+- `test_codex_prompt_and_tools_are_isolated`
+- `test_codex_single_invocation_and_no_retry`
+- `test_subscription_limit_survives_failure_and_restart`
+- `test_subscription_migration_preserves_existing_observations`
+
+候補実装pathは次の12個である。この一覧は計画上の候補であり、アプリ実装・test・dependencyの着手許可ではない。Python依存は追加しない。
+
+- `docs/plans/phase-01-first-playable-local-web-slice.md`
+- `docs/plans/phase-01-remaining-roadmap.md`
+- `src/neontof/model/gateway_models.py`
+- `src/neontof/model/gateway.py`
+- `src/neontof/model/codex_cli_provider.py`
+- `src/neontof/persistence/observation_store.py`
+- `src/neontof/persistence/migrations/0005_subscription_call_budget.sql`
+- `tests/model_gateway/test_codex_cli_provider.py`
+- `tests/model_gateway/test_gateway_budget.py`
+- `tests/persistence/test_observation_store.py`
+- `tests/persistence/test_migrations.py`
+- `tests/test_repository_contracts.py`
+
+候補実装pathは承認済みの実adapter code pathではない。exact adapter code path、依存、test path、staging範囲のapprovalは未取得であり、実装着手条件と同時に確定する。実装前CLI実証で一回invocation・retryなしを証明できない、または既知未確認点が残る場合はadapter、test、migrationを作らない。Real Providerはこの一サイクルで完了させ、別の入れ子phaseを作らない。
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/model_gateway tests/persistence/test_observation_store.py tests/persistence/test_migrations.py tests/test_repository_contracts.py
+.\.venv\Scripts\python.exe -m compileall -q src
+.\.venv\Scripts\python.exe -m ruff format --check src tests
+.\.venv\Scripts\python.exe -m ruff check src tests
+.\.venv\Scripts\python.exe -m mypy --strict src tests --exclude tests/typecheck_fixtures
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+上記focused testと共通Gateは実装cycleで実行する。この計画段階では新しいtestを作成・実行せず、候補path以外を変更しない。Real Provider commit後に初めて旧P1-06全体を完了扱いにできる。Fake / RecordedのLocal Gateway完了契約と次のPublic Context変更は維持する。
 
 ---
 
