@@ -3645,7 +3645,7 @@ class ModelGateway:
 
 `GatewayFailure.attempts`はvalidatorで、`code="budget_exceeded"`なら`0`、それ以外なら`1`に固定する。予算超過のfailureでは`model_call_id=None`、attempt Telemetryなしとし、成功・その他のfailureは一回のattemptとして扱う。
 
-通常Turnの`ModelRequest.roles`は次に固定する。
+通常Turnの`ProviderRequest.roles`は次に固定する。
 
 ```python
 ("referee", "world_simulator", "npc_actor", "narrator")

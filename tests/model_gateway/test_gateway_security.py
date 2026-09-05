@@ -13,7 +13,6 @@ import pytest
 from neontof.model.gateway import (
     GatewayFixtureProvider,
     ModelGateway,
-    create_gateway_fake_provider,
 )
 from neontof.model.gateway_models import (
     GatewayFixtureCase,
@@ -101,6 +100,21 @@ def _success_step() -> SuccessStep:
     return step
 
 
+class _SpyProvider(GatewayFixtureProvider):
+    def __init__(self, expected_request: ProviderRequest, step: SuccessStep) -> None:
+        super().__init__(
+            cases=(
+                # 完全envelope照合を維持したまま、境界直前の入力を記録する。
+                GatewayFixtureCase(expected_request=expected_request, step=step),
+            )
+        )
+        self.received: list[ProviderRequest] = []
+
+    def invoke(self, request: ProviderRequest, *, timeout_seconds: float) -> ModelResponse:
+        self.received.append(request)
+        return super().invoke(request, timeout_seconds=timeout_seconds)
+
+
 def _store(tmp_path: Path) -> Any:
     from neontof.persistence.observation_store import ObservationStore
     from neontof.persistence.sqlite_database import SqliteDatabase
@@ -130,10 +144,7 @@ def test_api_key_sentinel_never_reaches_request_response_or_log(
     monkeypatch.setenv("OPENAI_API_KEY", sentinel)
     monkeypatch.setenv("ANTHROPIC_API_KEY", sentinel)
     request = _request()
-    provider = create_gateway_fake_provider(
-        expected_request=_expected(request),
-        step=_success_step(),
-    )
+    provider = _SpyProvider(_expected(request), _success_step())
     observations = _store(tmp_path)
     gateway = ModelGateway(
         provider=provider,
@@ -150,6 +161,10 @@ def test_api_key_sentinel_never_reaches_request_response_or_log(
     surfaces = [
         json.dumps(outcome.model_dump(mode="json"), ensure_ascii=False),
         json.dumps([call.model_dump(mode="json") for call in provider.calls], ensure_ascii=False),
+        json.dumps(
+            [call.model_dump(mode="json") for call in provider.received],
+            ensure_ascii=False,
+        ),
         json.dumps([record.model_dump(mode="json") for record in records], ensure_ascii=False),
         caplog.text,
     ]
@@ -165,21 +180,7 @@ def test_provider_spy_receives_public_only_request_with_player_input_and_dice(
     expected = _expected(request)
     step = _success_step()
 
-    class SpyProvider(GatewayFixtureProvider):
-        def __init__(self, expected_request: ProviderRequest) -> None:
-            super().__init__(
-                cases=(
-                    # 完全envelope照合を維持したまま、境界直前の入力を記録する。
-                    GatewayFixtureCase(expected_request=expected_request, step=step),
-                )
-            )
-            self.received: list[ProviderRequest] = []
-
-        def invoke(self, request: ProviderRequest, *, timeout_seconds: float) -> ModelResponse:
-            self.received.append(request)
-            return super().invoke(request, timeout_seconds=timeout_seconds)
-
-    provider = SpyProvider(expected)
+    provider = _SpyProvider(expected, step)
     observations = _store(tmp_path)
     gateway = ModelGateway(
         provider=provider,
@@ -206,7 +207,7 @@ def test_provider_spy_receives_public_only_request_with_player_input_and_dice(
     assert "gm_only" not in serialized
 
     different_input_request = _request(player_input="search the hidden passage")
-    different_input_provider = SpyProvider(expected)
+    different_input_provider = _SpyProvider(expected, step)
     different_input_path = tmp_path / "different-input"
     different_input_path.mkdir()
     different_input_observations = _store(different_input_path)
@@ -231,7 +232,7 @@ def test_provider_spy_receives_public_only_request_with_player_input_and_dice(
             "dice_result": request.dice_result.model_copy(update={"result": 8}),
         },
     )
-    different_dice_provider = SpyProvider(expected)
+    different_dice_provider = _SpyProvider(expected, step)
     different_dice_path = tmp_path / "different-dice"
     different_dice_path.mkdir()
     different_dice_observations = _store(different_dice_path)

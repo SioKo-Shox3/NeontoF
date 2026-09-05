@@ -8,9 +8,15 @@ from typing import Any
 
 import pytest
 
-from neontof.model.gateway import ModelGateway, build_provider_request, create_gateway_fake_provider
+from neontof.model.gateway import (
+    GatewayFixtureProvider,
+    ModelGateway,
+    build_provider_request,
+    create_gateway_fake_provider,
+)
 from neontof.model.gateway_models import (
     GatewayFailure,
+    GatewayFixtureCase,
     GatewayRequest,
     ProviderRequest,
     PublicContext,
@@ -169,10 +175,19 @@ def test_model_error_aborts_without_retry(failure_code: str, tmp_path: Path) -> 
 
 
 def test_one_turn_uses_one_model_call_id(tmp_path: Path) -> None:
-    request = _request()
-    provider = create_gateway_fake_provider(
-        expected_request=_expected(request),
-        step=_success_step(),
+    first_request = _request()
+    second_request = first_request.model_copy(update={"turn_id": "turn:second"})
+    provider = GatewayFixtureProvider(
+        cases=(
+            GatewayFixtureCase(
+                expected_request=_expected(first_request),
+                step=_success_step(),
+            ),
+            GatewayFixtureCase(
+                expected_request=_expected(second_request),
+                step=_success_step(),
+            ),
+        )
     )
     observations = _store(tmp_path)
     gateway = ModelGateway(
@@ -182,14 +197,28 @@ def test_one_turn_uses_one_model_call_id(tmp_path: Path) -> None:
         timeout_seconds=0.5,
     )
 
-    outcome = gateway.invoke(request)
+    first_outcome = gateway.invoke(first_request)
+    second_outcome = gateway.invoke(second_request)
 
-    assert outcome.type == "success"
-    assert len(provider.calls) == 1
-    expected_call_id = f"model-call:{hashlib.sha256(request.turn_id.encode('utf-8')).hexdigest()}"
-    assert provider.calls[0].request_id == expected_call_id
-    telemetry = observations.read_telemetry("campaign:alpha", "turn:main")
-    assert len(telemetry) == 1
-    assert telemetry[0].model_call_id == expected_call_id
-    transcripts = observations.read_transcript("campaign:alpha", "turn:main")
-    assert {record.model_call_id for record in transcripts} == {expected_call_id}
+    assert first_outcome.type == "success"
+    assert second_outcome.type == "success"
+    assert len(provider.calls) == 2
+    expected_first_call_id = (
+        f"model-call:{hashlib.sha256(first_request.turn_id.encode('utf-8')).hexdigest()}"
+    )
+    expected_second_call_id = (
+        f"model-call:{hashlib.sha256(second_request.turn_id.encode('utf-8')).hexdigest()}"
+    )
+    assert provider.calls[0].request_id == expected_first_call_id
+    assert provider.calls[0].attempt == 1
+    assert provider.calls[1].request_id == expected_second_call_id
+    assert provider.calls[1].attempt == 1
+    assert expected_first_call_id != expected_second_call_id
+    first_telemetry = observations.read_telemetry("campaign:alpha", "turn:main")
+    second_telemetry = observations.read_telemetry("campaign:alpha", "turn:second")
+    assert len(first_telemetry) == 1
+    assert first_telemetry[0].model_call_id == expected_first_call_id
+    assert first_telemetry[0].attempt == 1
+    assert len(second_telemetry) == 1
+    assert second_telemetry[0].model_call_id == expected_second_call_id
+    assert second_telemetry[0].attempt == 1

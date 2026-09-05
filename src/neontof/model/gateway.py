@@ -161,7 +161,7 @@ class GatewayFixtureProvider:
         self._calls.append(
             SanitizedProviderCallLogEntry(
                 request_id=request.model_call_id,
-                attempt=len(self._calls) + 1,
+                attempt=sum(call.request_id == request.model_call_id for call in self._calls) + 1,
                 publication_visibility=request.public_context.publication_visibility,
                 context_digest=request.public_context.context_digest,
                 context_item_count=len(request.public_context.projection.facts),
