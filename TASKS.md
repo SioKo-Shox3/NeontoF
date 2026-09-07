@@ -21,14 +21,16 @@ Real Provider の入口を確認する。対象は Codex CLI `0.153.3`、`gpt-5.
 - repository への記録は TASKS / PROGRESS / LESSONS / NEXT_FINDINGS / STEER、必要時の `blocked/T-*.md`、訂正に対応する教訓1件に限定する。実装・上位仕様・既存2計画・ハーネスを変更しない。日本語、UTF-8 BOMなし、LF。明示列挙で stage し、日本語で commit、pushしない。
 
 ## T-001: Codex CLI の offline 入力隔離と再送境界を実証する
-- status: todo
+- status: blocked
+- blocker: 既存 Windows sandbox の実効設定では localhost receiver の TCP 全ポートも遮断される。承認範囲内で外部遮断と receiver 到達性を両立する設定を確立できていない。構成確認の証拠と再開条件は `blocked/T-001.md`。
 - done-when: 承認済み一時 root 内に標準ライブラリの probe と公開設定があり、外部通信の遮断根拠、最終 tools=[]、非公開入力混入なし、正常/401/timeout/5xx/切断の最小ケースの source と受信数と trace の対応を evidence/offline に記録する。verify-offline が保存済みの証拠を開いて検証し exit 0。再現できない必須分岐は合格でなく blocked とする。
 - verify: `& .\.venv\Scripts\python.exe C:\Users\KINGkawamura\AppData\Local\Temp\NeontoF-provider-proof\codex-0.153.3\probe_cli.py verify-offline`
 - paths: TASKS.md, PROGRESS.md, LESSONS.md, NEXT_FINDINGS.md, STEER.md, blocked/T-001.md, .harness/runs/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/offline-home/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/public-work/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/config/spark-models.json, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/config/offline.toml, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/config/response.schema.json, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/input/public-request.json, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/evidence/offline/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/probe_cli.py
 - notes: live 接続・実 credential 読取り・Spark生成は禁止。可能な分岐調査と必要資材は自分で作る。新しい worktree、OS Firewall の恒久変更、資格情報の転用、CLIのforkは範囲外。権限不足や隔離方式の未成立は証拠を記録して停止する。verify は保存済み証拠の検査だけで実験を再実行しない。probe を作る前にブロックした場合は不存在の verify を実行せず、その理由を blocked に記録する。
 
 ## T-002: 専用ログインと Spark 正常呼出し一回の入口を確認する
-- status: todo
+- status: blocked
+- blocker: T-001 の完了条件が未成立。ログイン・生成は開始していない。`blocked/T-002.md`。
 - done-when: T-001がdoneで、公式ログイン・利用枠・credit条件を確認でき、live receiptにより一回限りの呼出しを実施し、実 payload の tools=[]・公開入力のみ・追加streamなし・正常生成1回を evidence/live の証拠で検証できる。verify-live が再生成せず保存済み証拠を検査して exit 0。一時資材と認証領域の保持/片付け結果を明示する。
 - verify: `& .\.venv\Scripts\python.exe C:\Users\KINGkawamura\AppData\Local\Temp\NeontoF-provider-proof\codex-0.153.3\probe_cli.py verify-live`
 - paths: TASKS.md, PROGRESS.md, LESSONS.md, NEXT_FINDINGS.md, STEER.md, blocked/T-002.md, .harness/runs/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/live-home/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/public-work/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/config/live.toml, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/evidence/live/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/probe_cli.py
