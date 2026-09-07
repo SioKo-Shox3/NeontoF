@@ -8,7 +8,7 @@
 
 ## In progress
 
-- T-001 は blocked。CLI `0.153.3` の実在を確認したが、既存 Windows sandbox の実効規則は localhost の TCP 全ポートも遮断する。外部遮断と検証 receiver の到達性を両立する構成は未成立。
+- T-001 は blocked。CLI `0.153.3` の実在を確認したが、既存 Windows の offline sandbox 用規則は localhost の TCP 全ポートも遮断する。外部遮断と検証 receiver の到達性を両立する構成は未成立。
 - T-002 は依存 blocked。専用ログイン・Spark 生成・アプリ実装は未開始。
 
 ## Next
