@@ -29,8 +29,8 @@ Real Provider の入口を確認する。対象は Codex CLI `0.153.3`、`gpt-5.
 - notes: live 接続・実 credential 読取り・Spark生成は禁止。通信先や payload が契約を外れた場合は失敗理由を調べて修正する。同一原因の2回失敗では相談する。verify は保存済み証拠の検査だけで実験を再実行しない。旧 OS 隔離の停止記録は経緯として保持し、現在の完了条件と混同しない。
 
 ## T-002: 専用ログインと Spark 正常呼出し一回の入口を確認する
-- status: in_progress
-- notes-progress: T-001 完了。専用 HOME の公式ログインと利用枠確認へ進む。
+- status: blocked
+- blocker: T-001 完了。専用 HOME の公式ログインを開始し、Chrome の OpenAI 認証画面で本人操作を待っている。詳細は `blocked/T-002.md`。
 - done-when: T-001がdoneで、公式ログイン・利用枠・credit条件を確認でき、live receiptにより一回限りの呼出しを実施し、実 payload の tools=[]・公開入力のみ・追加streamなし・正常生成1回を evidence/live の証拠で検証できる。verify-live が再生成せず保存済み証拠を検査して exit 0。一時資材と認証領域の保持/片付け結果を明示する。
 - verify: `& .\.venv\Scripts\python.exe C:\Users\KINGkawamura\AppData\Local\Temp\NeontoF-provider-proof\codex-0.153.3\probe_cli.py verify-live`
 - paths: TASKS.md, PROGRESS.md, LESSONS.md, NEXT_FINDINGS.md, STEER.md, blocked/T-002.md, .harness/runs/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/live-home/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/public-work/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/config/live.toml, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/evidence/live/**, C:/Users/KINGkawamura/AppData/Local/Temp/NeontoF-provider-proof/codex-0.153.3/probe_cli.py
